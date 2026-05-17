@@ -1,0 +1,7 @@
+{
+  "update_interval_sec": 5,
+  "min_volume_usdt": 500000,
+  "exchanges": ["binance", "bybit", "okx", "kucoin"],
+  "telegram_token": "",
+  "telegram_chat_id": ""
+}
