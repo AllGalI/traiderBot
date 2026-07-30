@@ -10,47 +10,47 @@ import (
 type Route []graph.Edge
 
 // FindTriangularRoutes находит все уникальные направленные треугольники
-func FindTriangularRoutes(graph graph.Graph) []Route {
-	var routes []Route
-	seen := make(map[string]struct{})
+	func FindTriangularRoutes(graph graph.Graph) []Route {
+		var routes []Route
+		seen := make(map[string]struct{})
 
-	for start, edges1 := range graph {
-		for _, e1 := range edges1 {
-			mid := e1.To
-			if mid == start {
-				continue
-			}
-
-			for _, e2 := range graph[mid] {
-				end := e2.To
-				if end == start || end == mid {
+		for start, edges1 := range graph {
+			for _, e1 := range edges1 {
+				mid := e1.To
+				if mid == start {
 					continue
 				}
 
-				// Ищем ребро, которое замыкает цикл: end → start
-				for _, e3 := range graph[end] {
-					if e3.To != start {
+				for _, e2 := range graph[mid] {
+					end := e2.To
+					if end == start || end == mid {
 						continue
 					}
 
-					// Нашли цикл: start → mid → end → start
-					route := Route{e1, e2, e3}
+					// Ищем ребро, которое замыкает цикл: end → start
+					for _, e3 := range graph[end] {
+						if e3.To != start {
+							continue
+						}
 
-					// Нормализуем ключ, чтобы убрать ротации одного и того же направленного цикла
-					key := routeKey(route)
-					if _, exists := seen[key]; exists {
-						continue
+						// Нашли цикл: start → mid → end → start
+						route := Route{e1, e2, e3}
+
+						// Нормализуем ключ, чтобы убрать ротации одного и того же направленного цикла
+						key := routeKey(route)
+						if _, exists := seen[key]; exists {
+							continue
+						}
+						seen[key] = struct{}{}
+
+						routes = append(routes, route)
 					}
-					seen[key] = struct{}{}
-
-					routes = append(routes, route)
 				}
 			}
 		}
-	}
 
-	return routes
-}
+		return routes
+	}
 
 // routeKey делает ключ уникальным для направленного цикла
 // (ротации одного цикла дают одинаковый ключ, обратный цикл — другой)
@@ -81,4 +81,26 @@ func routeKey(r Route) string {
 		b.WriteByte('|')
 	}
 	return b.String()
+}
+
+
+func BuildRouteIndex(routes []Route) map[string][]Route {
+	index := make(map[string][]Route)
+
+	for _, r := range routes {
+		// каждый маршрут содержит 3 ребра → 3 символа
+		seenInRoute := make(map[string]struct{}, 3) // на случай, если вдруг один символ встретится дважды (маловероятно)
+
+		for _, edge := range r {
+			sym := edge.Symbol
+			if _, ok := seenInRoute[sym]; ok {
+				continue
+			}
+			seenInRoute[sym] = struct{}{}
+
+			index[sym] = append(index[sym], r)
+		}
+	}
+
+	return index
 }

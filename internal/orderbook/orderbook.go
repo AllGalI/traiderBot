@@ -16,9 +16,8 @@ import (
 
 const (
 	restBaseURL = "https://api.binance.com"
-	wsBaseURL   = "wss://stream.binance.com:9443/ws"
+	wsBaseURL   = "wss://stream.binance.com:9443"
 )
-
 
 type PriceLevel struct {
 	Price float64
@@ -48,55 +47,89 @@ func (p *PriceLevel) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// OrderBook хранит текущий стакан
 type OrderBook struct {
 	Mu           sync.RWMutex
 	symbol       string
 	lastUpdateID int64
-	Asks         []PriceLevel // price -> qty
-	Bids         []PriceLevel // price -> qty
-	depth        int               // 5 / 10 / 20
+	Asks         []PriceLevel
+	Bids         []PriceLevel
+	depth        int
 }
 
-// Market управляет несколькими стаканами
+func (ob *OrderBook) GetBestBid() (PriceLevel, bool) {
+	ob.Mu.RLock()
+	defer ob.Mu.RUnlock()
+	if len(ob.Bids) == 0 {
+		return PriceLevel{}, false
+	}
+	return ob.Bids[0], true
+}
+
+func (ob *OrderBook) GetBestAsk() (PriceLevel, bool) {
+	ob.Mu.RLock()
+	defer ob.Mu.RUnlock()
+	if len(ob.Asks) == 0 {
+		return PriceLevel{}, false
+	}
+	return ob.Asks[0], true
+}
+
+func (ob *OrderBook) Symbol() string {
+	return ob.symbol
+}
+
+// applyPartialSnapshot полностью заменяет топ-N
+func (ob *OrderBook) applyPartialSnapshot(lastUpdateID int64, bids, asks []PriceLevel) {
+	ob.Mu.Lock()
+	defer ob.Mu.Unlock()
+
+	ob.Bids = bids
+	ob.Asks = asks
+	ob.lastUpdateID = lastUpdateID
+}
+
 type Market struct {
 	mu         sync.RWMutex
 	orderBooks map[string]*OrderBook
-	depth      int // глубина по умолчанию для всех книг
-	cancel     context.CancelFunc
-}
+	depth      int
 
-// -------------------- Конструкторы --------------------
+	// управление WS
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+
+	// можно будет использовать потом для маршрутов
+	onUpdate func(symbol string)
+}
 
 func NewMarket(depth int) *Market {
 	if depth != 5 && depth != 10 && depth != 20 {
-		depth = 10 // безопасный дефолт
+		depth = 10
 	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
 	return &Market{
 		orderBooks: make(map[string]*OrderBook),
 		depth:      depth,
+		ctx:        ctx,
+		cancel:     cancel,
 	}
 }
 
-func newOrderBook(symbol string, data restDepthResponse, depth int) *OrderBook {
-	return &OrderBook{
-		symbol: strings.ToUpper(symbol),
-		lastUpdateID: data.LastUpdateID,
-		Asks:   data.Asks,
-		Bids:   data.Bids,
-		depth:  depth,
-	}
+// SetOnUpdate позволяет подписаться на обновление любой книги
+func (m *Market) SetOnUpdate(fn func(symbol string)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onUpdate = fn
 }
-
-// -------------------- REST: первоначальная загрузка --------------------
 
 type restDepthResponse struct {
-	LastUpdateID int64      `json:"lastUpdateId"`
+	LastUpdateID int64        `json:"lastUpdateId"`
 	Bids         []PriceLevel `json:"bids"`
 	Asks         []PriceLevel `json:"asks"`
 }
 
-// LoadOrderBook загружает снимок стакана через REST
 func LoadOrderBook(symbol string, depth int) (*OrderBook, error) {
 	if depth != 5 && depth != 10 && depth != 20 {
 		depth = 10
@@ -121,80 +154,111 @@ func LoadOrderBook(symbol string, depth int) (*OrderBook, error) {
 		return nil, fmt.Errorf("decode rest depth: %w", err)
 	}
 
-	ob := newOrderBook(symbol, data, depth)
-
-	return ob, nil
+	return &OrderBook{
+		symbol:       strings.ToUpper(symbol),
+		lastUpdateID: data.LastUpdateID,
+		Asks:         data.Asks,
+		Bids:         data.Bids,
+		depth:        depth,
+	}, nil
 }
 
-// LoadMarket создаёт Market и загружает несколько символов через REST
-func LoadMarket(symbols []string, depth int) (*Market, error) {
-	m := NewMarket(depth)
+// Start загружает книги и запускает один combined WebSocket
+func (m *Market) Start(symbols []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
-	for _, sym := range symbols {
-		ob, err := LoadOrderBook(sym, depth)
-		if err != nil {
-			return nil, fmt.Errorf("load %s: %w", sym, err)
-		}
-		m.orderBooks[strings.ToUpper(sym)] = ob
+	if len(symbols) == 0 {
+		return fmt.Errorf("no symbols provided")
 	}
 
-	return m, nil
+	// 1. Загружаем REST-снимки
+	for _, sym := range symbols {
+		sym = strings.ToUpper(sym)
+		if _, exists := m.orderBooks[sym]; exists {
+			continue
+		}
+
+		ob, err := LoadOrderBook(sym, m.depth)
+		if err != nil {
+			return fmt.Errorf("load %s: %w", sym, err)
+		}
+		m.orderBooks[sym] = ob
+	}
+
+	// 2. Запускаем combined WS
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		m.runCombinedWS(symbols)
+	}()
+
+	return nil
 }
 
-// -------------------- WebSocket: Partial Book Depth --------------------
+func (m *Market) Stop() {
+	m.cancel()
+	m.wg.Wait()
+}
 
-// partialDepthEvent — то, что приходит в @depthN@100ms
+func (m *Market) GetOrderBook(symbol string) (*OrderBook, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	ob, ok := m.orderBooks[strings.ToUpper(symbol)]
+	return ob, ok
+}
+
+// -------------------- Combined WebSocket --------------------
+
+type combinedEvent struct {
+	Stream string          `json:"stream"`
+	Data   json.RawMessage `json:"data"`
+}
+
 type partialDepthEvent struct {
-	LastUpdateID int64      `json:"lastUpdateId"`
+	LastUpdateID int64        `json:"lastUpdateId"`
 	Bids         []PriceLevel `json:"bids"`
 	Asks         []PriceLevel `json:"asks"`
 }
 
-// UpdateOrderBook запускает WebSocket Partial Book Depth
-// и постоянно обновляет локальный стакан.
-// Возвращает указатель на OrderBook (уже существующий в Market или новый).
-func (m *Market) UpdateOrderBook(symbol string) (*OrderBook, error) {
-	symbol = strings.ToUpper(symbol)
-
-	m.mu.Lock()
-	ob, exists := m.orderBooks[symbol]
-	if !exists {
-		// если книги ещё нет — создаём и сразу грузим REST-снимок
-		var err error
-		ob, err = LoadOrderBook(symbol, m.depth)
-		if err != nil {
-			m.mu.Unlock()
-			return nil, err
-		}
-		m.orderBooks[symbol] = ob
+func (m *Market) runCombinedWS(symbols []string) {
+	// Собираем combined URL один раз
+	streams := make([]string, 0, len(symbols))
+	for _, sym := range symbols {
+		streams = append(streams, fmt.Sprintf("%s@depth%d@100ms",
+			strings.ToLower(sym), m.depth))
 	}
-	m.mu.Unlock()
 
-	// запускаем WS в фоне
-	go m.runPartialDepthWS(ob)
+	url := fmt.Sprintf("%s/stream?streams=%s", wsBaseURL, strings.Join(streams, "/"))
 
-	return ob, nil
-}
-
-// runPartialDepthWS — основной цикл WebSocket
-func (m *Market) runPartialDepthWS(ob *OrderBook) {
-	stream := fmt.Sprintf("%s@depth%d",
-		strings.ToLower(ob.symbol), ob.depth)
-
-	url := fmt.Sprintf("%s/%s", wsBaseURL, stream)
+	backoff := time.Second
 
 	for {
-		if err := m.connectAndListen(ob, url); err != nil {
-			fmt.Printf("[%s] ws error: %v, reconnecting in 3s...\n", ob.symbol, err)
-			time.Sleep(3 * time.Second)
-			continue
+		select {
+		case <-m.ctx.Done():
+			return
+		default:
 		}
-		// если вышли без ошибки — тоже переподключаемся
-		time.Sleep(1 * time.Second)
+
+		err := m.connectAndListen(url)
+		if err != nil {
+			fmt.Printf("[combined] ws error: %v, reconnecting in %v...\n", err, backoff)
+		}
+
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+
+		// простой backoff с потолком
+		if backoff < 8*time.Second {
+			backoff *= 2
+		}
 	}
 }
 
-func (m *Market) connectAndListen(ob *OrderBook, url string) error {
+func (m *Market) connectAndListen(url string) error {
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
 	}
@@ -205,59 +269,55 @@ func (m *Market) connectAndListen(ob *OrderBook, url string) error {
 	}
 	defer conn.Close()
 
-	// Binance требует pong на ping
+	// Сбрасываем backoff при успешном коннекте можно снаружи,
+	// но для простоты пока оставляем как есть.
+
 	conn.SetPingHandler(func(appData string) error {
 		return conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(time.Second))
 	})
 
 	for {
+		select {
+		case <-m.ctx.Done():
+			return nil
+		default:
+		}
+
 		_, message, err := conn.ReadMessage()
 		if err != nil {
 			return fmt.Errorf("read: %w", err)
 		}
 
-		var event partialDepthEvent
-		if err := json.Unmarshal(message, &event); err != nil {
-			continue // пропускаем мусор
+		var wrapper combinedEvent
+		if err := json.Unmarshal(message, &wrapper); err != nil {
+			continue
 		}
 
-		ob.applyPartialSnapshot(event)
+		// stream выглядит как "btcusdt@depth10@100ms"
+		parts := strings.Split(wrapper.Stream, "@")
+		if len(parts) < 1 {
+			continue
+		}
+		symbol := strings.ToUpper(parts[0])
+
+		var event partialDepthEvent
+		if err := json.Unmarshal(wrapper.Data, &event); err != nil {
+			continue
+		}
+
+		m.mu.RLock()
+		ob, ok := m.orderBooks[symbol]
+		onUpdate := m.onUpdate
+		m.mu.RUnlock()
+
+		if !ok {
+			continue
+		}
+
+		ob.applyPartialSnapshot(event.LastUpdateID, event.Bids, event.Asks)
+
+		if onUpdate != nil {
+			onUpdate(symbol)
+		}
 	}
-}
-
-// applyPartialSnapshot полностью заменяет топ-N уровней
-func (ob *OrderBook) applyPartialSnapshot(event partialDepthEvent) {
-	ob.Mu.Lock()
-	defer ob.Mu.Unlock()
-
-	// полностью очищаем и заполняем заново (Partial всегда полный топ)
-	ob.Bids = event.Bids
-	ob.Asks = event.Asks
-	ob.lastUpdateID = event.LastUpdateID
-}
-
-// -------------------- Вспомогательные методы --------------------
-
-// GetBestBid возвращает лучшую цену покупки и объём
-func (ob *OrderBook) GetBestBid() PriceLevel {
-	ob.Mu.RLock()
-	defer ob.Mu.RUnlock()
-	return ob.Bids[0]
-}
-
-// GetBestAsk возвращает лучшую цену продажи и объём
-func (ob *OrderBook) GetBestAsk() PriceLevel {
-	ob.Mu.RLock()
-	defer ob.Mu.RUnlock()
-
-	return ob.Asks[0]
-}
-
-
-// GetOrderBook возвращает книгу по символу
-func (m *Market) GetOrderBook(symbol string) (*OrderBook, bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	ob, ok := m.orderBooks[strings.ToUpper(symbol)]
-	return ob, ok
 }

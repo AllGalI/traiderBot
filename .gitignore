@@ -1,3 +1,2 @@
-.env
-env*
-pairs.json
+*.log
+*.env
