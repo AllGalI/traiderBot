@@ -2,35 +2,125 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
-	"sync/atomic"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/joho/godotenv"
 
-	// "time"
-	// orderbook "traiderBot/internal/orderBook"
-
 	"traiderBot/internal/arbitrage"
+	"traiderBot/internal/arbitrage/deduplicate"
+	"traiderBot/internal/binance"
 	"traiderBot/internal/dataloader"
-	"traiderBot/internal/graph"
+	"traiderBot/internal/graphb"
 	"traiderBot/internal/myLogger"
+	"traiderBot/internal/observe"
 	"traiderBot/internal/orderbook"
 	"traiderBot/internal/route"
 )
 
-// var pairs = []string{"BTCUSDT",
-// 	"ETHBTC",
-// 	"ETHUSDT",
-// 	"SOLBTC",
-// 	"SOLUSDT",
-// 	"SOLETH",
-// 	"BNBBTC",
-// 	"BNBUSDT"}
+var (
+	startAmounts = map[string]float64{
+		"USDT": 100.0, // 100 USDT
+		"BTC":  0.002, // ≈ 100–130 USDT в зависимости от курса
+		"ETH":  0.03,  // ≈ 100 USDT
+		"BNB":  0.15,  // ≈ 100 USDT
+	}
+)
+
+type ExchangeData struct {
+	Pairs      []string                            `json:"pairs"`
+	Filters    map[string]dataloader.SymbolFilters `json:"filters"`
+	Fees       map[string]dataloader.FeeRate       `json:"fees"`
+	Graph      graphb.Graph                        `json:"graph"`
+	Routes     []route.Route                       `json:"routes"`
+	RouteIndex map[string][]route.Route            `json:"routeIndex"`
+}
+
+// "exchange_data.json"
+func GetCache(filePath string) ExchangeData {
+	file, err := os.Open(filePath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer file.Close()
+
+	var data ExchangeData
+
+	decoder := json.NewDecoder(file)
+	if err := decoder.Decode(&data); err != nil {
+		log.Fatal(err)
+	}
+
+	return data
+
+}
+
+func SaveCache(filePath string, data ExchangeData) {
+	file, err := os.Create(filePath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer file.Close()
+
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "  ") // красивое форматирование (необязательно)
+
+	if err := encoder.Encode(data); err != nil {
+		log.Fatal(err)
+	}
+
+}
+
+func LoadExchangeData(ctx context.Context, symbolsCount int) ExchangeData {
+	const cacheFile = "exchange_data.json"
+	if symbolsCount == 0 {
+		symbolsCount = 50
+	}
+
+	var data ExchangeData
+
+	client := dataloader.NewClient()
+
+	if stat, err := os.Stat(cacheFile); err == nil && stat.Size() > 0 {
+		// Кэш существует и не пустой
+		data = GetCache(cacheFile)
+
+		fmt.Println("Exchange data loaded from cache")
+		fmt.Println(time.Now())
+	} else {
+		// Кэша нет или файл пустой — загружаем с Binance
+		pairs, filters, err := dataloader.LoadExchangeInfo(ctx, symbolsCount)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		fees, err := client.LoadFees(ctx, pairs)
+		if err != nil {
+			log.Fatal(err)
+		}
+		data = ExchangeData{
+			Pairs:   pairs,
+			Filters: filters,
+			Fees:    fees,
+		}
+		data.Graph, _ = graphb.NewGraph(data.Pairs)
+		data.Routes = route.FindTriangularRoutes(data.Graph, startAmounts)
+		data.RouteIndex = route.BuildRouteIndex(data.Routes)
+
+		SaveCache(cacheFile, data)
+
+		fmt.Println("Exchange data saved to cache")
+	}
+
+	return data
+}
 
 func main() {
-
 	if err := godotenv.Load(); err != nil {
 		log.Println("No .env file found, using system env")
 	}
@@ -43,73 +133,23 @@ func main() {
 	defer logger.Sync()
 	defer loggerF.Close()
 
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT)
 
-	client := dataloader.NewClient()
+	defer stop()
+
+	echData := LoadExchangeData(ctx, 50)
+	simCounters := observe.NewSIMCounters()
+
+	m := orderbook.NewMarket(10)
+	m.Start(echData.Pairs)
 
 	start := time.Now()
-	pairs, filters, err := dataloader.LoadExchangeInfo(ctx, 50)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	fmt.Println("Pairs and filters loaded")
-	fmt.Printf("%v\n", time.Since(start))
-	start = time.Now()
-
-	fees, err := client.LoadFees(ctx, pairs)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	fmt.Println("Fees are loaded")
-	fmt.Printf("%#v\n", fees)
-	fmt.Printf("%v\n", time.Since(start))
-	start = time.Now()
-	if true {
-		return
-	}
-
-	// 1. Создаём рынок с глубиной 10
-	m := orderbook.NewMarket(10)
-	m.Start(pairs)
-	// m, err := orderbook.LoadMarket(pairs, 10)
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Println("Orderbook are loaded")
-	fmt.Printf("%v\n", time.Since(start))
-	start = time.Now()
-
-	g, err := graph.NewGraph(pairs)
-
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-
-	fmt.Println("Grapth was builded loaded")
-	fmt.Printf("%v\n", time.Since(start))
-	start = time.Now()
-
-	tradeRoutes := route.FindTriangularRoutes(g)
-
-	fmt.Println("Routes are built")
-	fmt.Printf("%v\n", time.Since(start))
-	start = time.Now()
-
-	routeIndex := route.BuildRouteIndex(tradeRoutes)
-
-	startAmounts := map[string]float64{
-		"USDT": 100.0, // 100 USDT
-		"BTC":  0.002, // ≈ 100–130 USDT в зависимости от курса
-		"ETH":  0.03,  // ≈ 100 USDT
-		"BNB":  0.15,  // ≈ 100 USDT
-	}
+	loggerF.Info(fmt.Sprintf("Session started at %v", start))
 
 	// При старте
 	updateCh := make(chan string, 256) // буфер, чтобы WS не блокировался
+
+	defer close(updateCh)
 
 	m.SetOnUpdate(func(symbol string) {
 		// Очень быстро, без блокировок
@@ -120,92 +160,236 @@ func main() {
 		}
 	})
 
-	var cycles int64 = 10000000
-	var counter atomic.Int64
-	var percent int64 = 100000
-	start = time.Now()
+	const (
+		maxBookAge    = 301 * time.Millisecond
+		dedupWindow   = 300 * time.Millisecond
+		cleanupMaxAge = dedupWindow * 5 // 1.5 секунды
+	)
 
-	// Воркер
+	dedup := deduplicate.NewDedupStore(dedupWindow)
+	symbolChecksCounter := 0
+	oldSymbols := 0
+	unfreshRoutesCounter := 0
+	freshRoutesCounter := 0
+	okStartAmountCounter := 0
+	totalSimulationsStarted := 0
+	dubsCheckCounter := 0
+	wrongStartAmount := 0
+	var topPercent float64 = -1
+	var totalPercent float64 = 0
+	var totalSimulations int = 0
+
 	go func() {
-		i := 0
+
+		// ... внутри воркера
 		for symbol := range updateCh {
-			currentCount := counter.Add(1)
+			symbolChecksCounter++
+			routes := echData.RouteIndex[symbol]
 
-			// Проверяем процент выполнения
-			if currentCount%percent == 0 {
-				fmt.Printf("workers are handled %d/%d of cycles --- %d%%\n", currentCount, cycles, (currentCount*100)/cycles)
-
-				d := time.Since(start)
-				h := int(d.Hours())
-				m := int(d.Minutes()) % 60
-				s := int(d.Seconds()) % 60
-				fmt.Printf("Time passed -- %02d:%02d:%02d\n", h, m, s)
-			}
-			routes := routeIndex[symbol]
 			for _, r := range routes {
-				startAsset := r[0].From
+				if len(r.OldSymbols) != 0 {
+					if _, ok := r.OldSymbols[symbol]; !ok {
+						oldSymbols++
+						continue
+					}
+
+					delete(r.OldSymbols, symbol)
+
+					if len(r.OldSymbols) != 0 {
+						oldSymbols++
+						continue
+					}
+				}
+
+				if !r.UpdateFreshness(m, maxBookAge) {
+					unfreshRoutesCounter++
+					continue
+				}
+				freshRoutesCounter++
+				startAsset := r.Edges[0].From
 				startAmount, ok := startAmounts[startAsset]
 				if !ok {
-					// можно поставить дефолт или пропустить
-					// startAmount = 50.0
+					wrongStartAmount++
+					continue
 				}
-				opp := arbitrage.SimulateRoute(r, startAmount, m, fees, filters, 0.0005, logger)
-				if opp != nil {
-					// нашли возможность — отправляем дальше
-					// например в другой канал opportunityCh <- opp
-					loggerF.Info(opp)
+				okStartAmountCounter++
 
+				opp := arbitrage.SimulateRoute(
+					r,
+					startAmount,
+					m,
+					echData.Fees,
+					echData.Filters,
+					0.0005,
+					&topPercent,
+					&totalPercent,
+					&totalSimulations,
+					simCounters,
+				)
+				totalSimulationsStarted++
+				if opp == nil {
+					continue
 				}
-				i++
+				routeKey := route.RouteKey(opp.Route)
+				now := time.Now()
+
+				isDup := dedup.IsDuplicate(routeKey, now)
+				if isDup {
+					dubsCheckCounter++
+					// можно логировать с флагом duplicate=true
+					continue
+				}
+				// новая возможность
+				dedup.MarkSeen(routeKey, now)
+				cB := binance.NewClient()
+
+				for idx, step := range opp.Steps {
+					st := time.Now()
+					response, err := cB.PlaceLimitIOC(ctx, step)
+					if err != nil {
+						fmt.Println(err)
+					}
+					fmt.Printf(`
+					idx %d -- time sinse start %v
+					%#v
+					`, idx, time.Since(st), response)
+				}
+
+				// здесь логируем возможность + ages из freshness.Ages
+				loggerF.Info(fmt.Sprintf("Найдена возможность! Прибыль: %.4f%% (%.6f %s)\n",
+					opp.ProfitPct*100, opp.ProfitAbs, opp.StartAsset))
+
 			}
 		}
 	}()
 
-	time.Sleep(2 * time.Hour)
-	// for i := range 1000000 {
-	// 	if i%10000 == 0 {
-	// 		fmt.Printf("Cicle %d\n", i%1000000)
-	// 	}
-	// 	for _, tR := range tradeRoutes {
-	// 		// route := ... // твой найденный Route
+	go func() {
+		ticker := time.NewTicker(2 * time.Second) // как часто чистим
+		logTicker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
 
-	// 		startAsset := tR[0].From
-	// 		startAmount, ok := startAmounts[startAsset]
-	// 		if !ok {
-	// 			// можно поставить дефолт или пропустить
-	// 			startAmount = 50.0
-	// 		}
+		for {
+			select {
+			case <-ticker.C:
+				dedup.Cleanup(cleanupMaxAge)
+			case <-logTicker.C:
 
-	// 		opp := arbitrage.SimulateRoute(
-	// 			tR,
-	// 			startAmount,
-	// 			m, // ты создаёшь сам
-	// 			fees,
-	// 			filters,
-	// 			0.0005, // минимум 0.05% прибыли
-	// 			logger,
-	// 		)
+				loggerF.StatsLog("stats.log",
+					fmt.Sprintf(`
+starts from %v
 
-	// 		if opp != nil {
-	// 			fmt.Printf("Найдена возможность! Прибыль: %.4f%% (%.6f %s)\n",
-	// 				opp.ProfitPct*100, opp.ProfitAbs, opp.StartAsset)
-	// 		}
-	// 	}
-	// }
+symbolChecksCounter %d
 
-	// fmt.Println("Routes was handled by 100 times")
-	// fmt.Printf("%v\n", time.Since(start))
-	// start = time.Now()
+oldSymbolsCounet %d
+
+totalSimulationsStarted %d
+
+dubsCheckCounter %d
+
+unfreshRoutesCounter %d
+
+freshRoutesCounter %d
+
+wrongStartAmount %d
+
+okStartAmountCounter %d
+
+totalSimulations %d
+
+top percent %f
+
+average percent = %f
+
+working time -- %v
+
+%s
+`,
+
+						start,
+						symbolChecksCounter,
+						oldSymbols,
+						totalSimulationsStarted,
+						dubsCheckCounter,
+						unfreshRoutesCounter,
+						freshRoutesCounter,
+						wrongStartAmount,
+						okStartAmountCounter,
+						totalSimulations,
+						topPercent,
+						totalPercent/float64(totalSimulations),
+						time.Since(start),
+						fmt.Sprintf(`
+------simFailuresCounters------
+
+invalid-route-length %d
+
+orderbook-not-found %d
+
+fee-not-found %d
+
+filters-not-found %d
+
+not-enough-liquidity %d
+
+LOT_SIZE-failed %d
+
+MIN_NOTIONAL-failed %d
+
+route doesn't return to start asset %d
+
+profit too low %d
+
+opportunity found %d
+						`,
+							simCounters.InvalidRouteLength.Load(),
+							simCounters.OrderbookNotFound.Load(),
+							simCounters.FeeNotFound.Load(),
+							simCounters.FiltersNotFound.Load(),
+							simCounters.NotEnoughLiquidity.Load(),
+							simCounters.LotSize.Load(),
+							simCounters.MinNotional.Load(),
+							simCounters.StartAsset.Load(),
+							simCounters.ProfitTooLow.Load(),
+							simCounters.OpportunityFound.Load(),
+						),
+					),
+				)
+
+			case <-ctx.Done(): // если есть контекст для остановки
+				return
+			}
+		}
+	}()
+
+	select {
+
+	case <-ctx.Done():
+		fmt.Println("Получен сигнал отмены Ctrl + c")
+
+		fmt.Println("Канал закрыт")
+		loggerF.Info(fmt.Sprintf("symbolChecksCounter %d\n", symbolChecksCounter))
+		loggerF.Info(fmt.Sprintf("totalSimulationsStarted %d\n", totalSimulationsStarted))
+		loggerF.Info(fmt.Sprintf("dubsCheckCounter %d\n", dubsCheckCounter))
+		loggerF.Info(fmt.Sprintf("unfreshRoutesCounter %d\n", unfreshRoutesCounter))
+		loggerF.Info(fmt.Sprintf("Top percent %f\n", topPercent))
+		loggerF.Info(fmt.Sprintf("average percent = %f", totalPercent/float64(totalSimulations)))
+		loggerF.Info(fmt.Sprintf("Working time -- %v\n", time.Since(start)))
+	}
 }
-
-
 
 // package main
 
 // import (
-// 	"traiderBot/internal/myLogger/logReader"
+// 	"fmt"
+// 	"time"
+// 	"traiderBot/internal/myLogger"
+// 	// "traiderBot/internal/myLogger/logReader"
 // )
 
 // func main() {
-// 	logReader.CheckCummulativeProfit("app.log")
+// 	loggerF, _ := myLogger.NewFileLogger("app.log")
+
+// 	// logReader.CheckCummulativeProfit("app.log")
+// 	loggerF.Info(fmt.Sprintf("Session started at %v", time.Now()))
+
 // }

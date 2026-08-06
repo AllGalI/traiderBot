@@ -63,6 +63,22 @@ func (fl *FileLogger) Info(data any) {
 	fl.logger.Printf("%v", data)
 }
 
+func (fl *FileLogger) StatsLog(filePath, data string) error {
+	f, err := os.Create(filePath)
+	if err != nil {
+		return err
+	}
+
+	defer f.Close()
+
+	_, err = f.WriteString(data)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (fl *FileLogger) Close() error {
 	return fl.file.Close()
 }

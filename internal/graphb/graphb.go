@@ -1,4 +1,4 @@
-package graph
+package graphb
 
 import (
 	"errors"
@@ -59,7 +59,7 @@ func buildEdges(pairs []string) ([]Edge, error) {
 	for _, symbol := range pairs {
 		base, quote, err := parseSymbol(symbol)
 		if errors.Is(err, UnknownAsset{symbol}){
-			log.Printf("%w", err.Error())
+			log.Printf("%v", err.Error())
 			continue
 		}
 

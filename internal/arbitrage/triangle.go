@@ -4,11 +4,10 @@ import (
 	"math"
 	"time"
 	"traiderBot/internal/dataloader"
-	"traiderBot/internal/graph"
+	"traiderBot/internal/graphb"
+	"traiderBot/internal/observe"
 	"traiderBot/internal/orderbook"
 	"traiderBot/internal/route"
-
-	"go.uber.org/zap"
 )
 
 // // FeeRate — комиссии по паре
@@ -28,7 +27,7 @@ import (
 
 // StepResult — результат одного шага
 type StepResult struct {
-	Edge      graph.Edge
+	Edge      graphb.Edge
 	Side      string
 	AvgPrice  float64
 	Quantity  float64 // базовый актив
@@ -119,43 +118,25 @@ func SimulateRoute(
 	fees map[string]dataloader.FeeRate,
 	filters map[string]dataloader.SymbolFilters,
 	minProfitPct float64,
-	logger *zap.Logger, // передаём логгер снаружи
+	topPercent *float64,
+	totalPercent *float64,
+	totalSimulatedCounter *int,
+	simCounters *observe.SIMCounters,
 ) *Opportunity {
 
-	logger.Debug("SIM start",
-		zap.Any("route", route),
-		zap.Float64("startAmount", startAmount),
-	)
-
-	if len(route) != 3 {
-		logger.Warn("SIM invalid route length",
-			zap.Int("len", len(route)),
-		)
+	if len(route.Edges) != 3 {
+		simCounters.InvalidRouteLength.Add(1)
 		return nil
 	}
 
 	currentAmount := startAmount
-	startAsset := route[0].From
+	startAsset := route.Edges[0].From
 	steps := make([]StepResult, 0, 3)
 
-	for i, edge := range route {
-		sideStr := "SELL"
-		if edge.IsBuy {
-			sideStr = "BUY"
-		}
-
-		logger.Debug("SIM step",
-			zap.Int("step", i+1),
-			zap.String("symbol", edge.Symbol),
-			zap.String("side", sideStr),
-			zap.Float64("amountIn", currentAmount),
-		)
-
+	for _, edge := range route.Edges {
 		ob, ok := market.GetOrderBook(edge.Symbol)
 		if !ok || ob == nil {
-			logger.Debug("SIM orderbook not found",
-				zap.String("symbol", edge.Symbol),
-			)
+			simCounters.OrderbookNotFound.Add(1)
 			return nil
 		}
 
@@ -170,70 +151,38 @@ func SimulateRoute(
 		copy(levelsCopy, levels)
 		ob.Mu.RUnlock()
 
-		logger.Debug("SIM book levels",
-			zap.Int("levels", len(levelsCopy)),
-		)
-
 		feeRate, ok := fees[edge.Symbol]
 		if !ok {
-			logger.Warn("SIM fee not found",
-				zap.String("symbol", edge.Symbol),
-			)
+			simCounters.FeeNotFound.Add(1)
 			return nil
 		}
 
 		filter, ok := filters[edge.Symbol]
 		if !ok {
-			logger.Warn("SIM filters not found",
-				zap.String("symbol", edge.Symbol),
-			)
+			simCounters.FiltersNotFound.Add(1)
 			return nil
 		}
 
 		avgPrice, amountOut, baseQty, ok := walkBook(levelsCopy, currentAmount, edge.IsBuy)
 		if !ok {
-			logger.Debug("SIM not enough liquidity",
-				zap.String("symbol", edge.Symbol),
-				zap.Float64("amountIn", currentAmount),
-			)
+			simCounters.NotEnoughLiquidity.Add(1)
 			return nil
 		}
-
-		logger.Debug("SIM walkBook",
-			zap.Float64("avgPrice", avgPrice),
-			zap.Float64("baseQty", baseQty),
-			zap.Float64("amountOut", amountOut),
-		)
 
 		fee := amountOut * feeRate.Taker
 		amountOutAfterFee := amountOut - fee
 
-		logger.Debug("SIM fee",
-			zap.Float64("feeRate", feeRate.Taker),
-			zap.Float64("fee", fee),
-			zap.Float64("amountAfterFee", amountOutAfterFee),
-		)
-
 		qtyRounded := roundStep(baseQty, filter.StepSize)
 
 		if qtyRounded < filter.MinQty {
-			logger.Debug("SIM LOT_SIZE failed",
-				zap.String("symbol", edge.Symbol),
-				zap.Float64("qty", baseQty),
-				zap.Float64("rounded", qtyRounded),
-				zap.Float64("minQty", filter.MinQty),
-			)
+			simCounters.LotSize.Add(1)
 			return nil
 		}
 
 		notional := qtyRounded * avgPrice
 
 		if notional < filter.MinNotional {
-			logger.Debug("SIM MIN_NOTIONAL failed",
-				zap.String("symbol", edge.Symbol),
-				zap.Float64("notional", notional),
-				zap.Float64("minNotional", filter.MinNotional),
-			)
+			simCounters.MinNotional.Add(1)
 			return nil
 		}
 
@@ -256,42 +205,26 @@ func SimulateRoute(
 
 		steps = append(steps, step)
 
-		logger.Debug("SIM step completed",
-			zap.Int("step", i+1),
-			zap.Float64("amountOut", amountOutAfterFee),
-		)
-
 		currentAmount = amountOutAfterFee
 	}
 
-	if route[2].To != startAsset {
-		logger.Warn("SIM route doesn't return to start asset",
-			zap.String("start", startAsset),
-			zap.String("end", route[2].To),
-		)
+	if route.Edges[2].To != startAsset {
+		simCounters.StartAsset.Add(1)
 		return nil
 	}
 
 	profitAbs := currentAmount - startAmount
 	profitPct := profitAbs / startAmount
-
-	logger.Debug("SIM result",
-		zap.Float64("endAmount", currentAmount),
-		zap.Float64("profitAbs", profitAbs),
-		zap.Float64("profitPct", profitPct*100),
-	)
+	*topPercent = math.Max(*topPercent, profitPct)
+	*totalPercent += profitPct
+	*totalSimulatedCounter++
 
 	if profitPct < minProfitPct {
-		logger.Debug("SIM profit too low",
-			zap.Float64("profitPct", profitPct*100),
-			zap.Float64("minProfitPct", minProfitPct*100),
-		)
+		simCounters.ProfitTooLow.Add(1)
 		return nil
 	}
 
-	logger.Info("SIM opportunity found",
-		zap.Float64("profitPct", profitPct*100),
-	)
+	simCounters.OpportunityFound.Add(1)
 
 	return &Opportunity{
 		Route:       route,

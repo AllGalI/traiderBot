@@ -151,6 +151,8 @@ func NewClient() *Client {
 	return &Client{
 		apiKey: os.Getenv("API_KEY"),
 		secret: os.Getenv("SECRET_KEY"),
+		// apiKey: os.Getenv("TESTNET_API_KEY"),
+		// secret: os.Getenv("TESTNET_SECRET_KEY"),
 		http: &http.Client{
 			Timeout: 10 * time.Second,
 		},

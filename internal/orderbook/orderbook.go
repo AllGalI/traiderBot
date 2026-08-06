@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -48,12 +49,13 @@ func (p *PriceLevel) UnmarshalJSON(data []byte) error {
 }
 
 type OrderBook struct {
-	Mu           sync.RWMutex
-	symbol       string
-	lastUpdateID int64
-	Asks         []PriceLevel
-	Bids         []PriceLevel
-	depth        int
+	Mu             sync.RWMutex
+	symbol         string
+	lastUpdateID   int64
+	LastUpdateTime time.Time
+	Asks           []PriceLevel
+	Bids           []PriceLevel
+	depth          int
 }
 
 func (ob *OrderBook) GetBestBid() (PriceLevel, bool) {
@@ -86,12 +88,20 @@ func (ob *OrderBook) applyPartialSnapshot(lastUpdateID int64, bids, asks []Price
 	ob.Bids = bids
 	ob.Asks = asks
 	ob.lastUpdateID = lastUpdateID
+	ob.LastUpdateTime = time.Now()
+}
+func (ob *OrderBook) Age() time.Duration {
+	ob.Mu.RLock()
+	defer ob.Mu.RUnlock()
+
+	return time.Since(ob.LastUpdateTime)
 }
 
 type Market struct {
-	mu         sync.RWMutex
-	orderBooks map[string]*OrderBook
-	depth      int
+	mu             sync.RWMutex
+	orderBooks     map[string]*OrderBook
+	depth          int
+	updatesCounter atomic.Int64
 
 	// управление WS
 	ctx    context.Context
@@ -100,6 +110,18 @@ type Market struct {
 
 	// можно будет использовать потом для маршрутов
 	onUpdate func(symbol string)
+}
+
+func (m *Market) GetOrderbooks() map[string]*OrderBook {
+	return m.orderBooks
+}
+
+func (m *Market) SetOrderbooks(orderbooks map[string]*OrderBook) {
+	m.orderBooks = orderbooks
+}
+
+func (m *Market) GetUpdatesCounter() int64 {
+	return m.updatesCounter.Load()
 }
 
 func NewMarket(depth int) *Market {
@@ -155,11 +177,12 @@ func LoadOrderBook(symbol string, depth int) (*OrderBook, error) {
 	}
 
 	return &OrderBook{
-		symbol:       strings.ToUpper(symbol),
-		lastUpdateID: data.LastUpdateID,
-		Asks:         data.Asks,
-		Bids:         data.Bids,
-		depth:        depth,
+		symbol:         strings.ToUpper(symbol),
+		lastUpdateID:   data.LastUpdateID,
+		LastUpdateTime: time.Now(),
+		Asks:           data.Asks,
+		Bids:           data.Bids,
+		depth:          depth,
 	}, nil
 }
 
@@ -194,6 +217,14 @@ func (m *Market) Start(symbols []string) error {
 	}()
 
 	return nil
+}
+
+func (m *Market) StartCombinedSymbols(symbols []string) {
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		m.runCombinedWS(symbols)
+	}()
 }
 
 func (m *Market) Stop() {
@@ -308,6 +339,7 @@ func (m *Market) connectAndListen(url string) error {
 		m.mu.RLock()
 		ob, ok := m.orderBooks[symbol]
 		onUpdate := m.onUpdate
+		m.updatesCounter.Add(1)
 		m.mu.RUnlock()
 
 		if !ok {
