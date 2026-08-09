@@ -351,5 +351,6 @@ func (m *Market) connectAndListen(url string) error {
 		if onUpdate != nil {
 			onUpdate(symbol)
 		}
+
 	}
 }

@@ -14,7 +14,6 @@ import (
 
 	"traiderBot/internal/arbitrage"
 	"traiderBot/internal/arbitrage/deduplicate"
-	"traiderBot/internal/binance"
 	"traiderBot/internal/dataloader"
 	"traiderBot/internal/graphb"
 	"traiderBot/internal/myLogger"
@@ -127,6 +126,7 @@ func main() {
 
 	logger := myLogger.NewLogger()
 	loggerF, err := myLogger.NewFileLogger("app.log")
+	freshnessStats := route.NewFreshnessStats()
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func main() {
 	m.Start(echData.Pairs)
 
 	start := time.Now()
-	loggerF.Info(fmt.Sprintf("Session started at %v", start))
+	loggerF.Info(fmt.Sprintf("Session started at %v\n", start))
 
 	// При старте
 	updateCh := make(chan string, 256) // буфер, чтобы WS не блокировался
@@ -183,26 +183,12 @@ func main() {
 
 		// ... внутри воркера
 		for symbol := range updateCh {
+			stL := time.Now()
 			symbolChecksCounter++
 			routes := echData.RouteIndex[symbol]
 
 			for _, r := range routes {
-				if len(r.OldSymbols) != 0 {
-					if _, ok := r.OldSymbols[symbol]; !ok {
-						oldSymbols++
-						continue
-					}
-
-					delete(r.OldSymbols, symbol)
-
-					if len(r.OldSymbols) != 0 {
-						oldSymbols++
-						continue
-					}
-				}
-
-				if !r.UpdateFreshness(m, maxBookAge) {
-					unfreshRoutesCounter++
+				if !r.UpdateFreshness(m, maxBookAge, freshnessStats, "./stats/orderbook/data") {
 					continue
 				}
 				freshRoutesCounter++
@@ -221,6 +207,7 @@ func main() {
 					echData.Fees,
 					echData.Filters,
 					0.0005,
+					// -1,
 					&topPercent,
 					&totalPercent,
 					&totalSimulations,
@@ -228,6 +215,9 @@ func main() {
 				)
 				totalSimulationsStarted++
 				if opp == nil {
+					if symbol == "BTCUSDT" {
+						fmt.Printf("Время работы воркера сразу после симуляции- %v\n", time.Since(stL))
+					}
 					continue
 				}
 				routeKey := route.RouteKey(opp.Route)
@@ -241,23 +231,26 @@ func main() {
 				}
 				// новая возможность
 				dedup.MarkSeen(routeKey, now)
-				cB := binance.NewClient()
+				// cB := binance.NewClient()
 
-				for idx, step := range opp.Steps {
-					st := time.Now()
-					response, err := cB.PlaceLimitIOC(ctx, step)
-					if err != nil {
-						fmt.Println(err)
-					}
-					fmt.Printf(`
-					idx %d -- time sinse start %v
-					%#v
-					`, idx, time.Since(st), response)
-				}
+				// for idx, step := range opp.Steps {
+				// 	st := time.Now()
+				// 	response, err := cB.PlaceLimitIOC(ctx, step)
+				// 	if err != nil {
+				// 		fmt.Println(err)
+				// 	}
+				// 	fmt.Printf(`
+				// 	idx %d -- time sinse start %v
+				// 	%#v
+				// 	`, idx, time.Since(st), response)
+				// }
 
 				// здесь логируем возможность + ages из freshness.Ages
-				loggerF.Info(fmt.Sprintf("Найдена возможность! Прибыль: %.4f%% (%.6f %s)\n",
-					opp.ProfitPct*100, opp.ProfitAbs, opp.StartAsset))
+				// if symbol == "BTCUSDT" {
+				// 	loggerF.Info(fmt.Sprintf("Найдена возможность! Прибыль: %.4f%% (%.6f %s)\n",
+				// 		opp.ProfitPct*100, opp.ProfitAbs, opp.StartAsset))
+				// 	fmt.Printf("Время работы воркера при найденной прибыли - %v\n", time.Since(stL))
+				// }
 
 			}
 		}
@@ -360,21 +353,6 @@ opportunity found %d
 			}
 		}
 	}()
-
-	select {
-
-	case <-ctx.Done():
-		fmt.Println("Получен сигнал отмены Ctrl + c")
-
-		fmt.Println("Канал закрыт")
-		loggerF.Info(fmt.Sprintf("symbolChecksCounter %d\n", symbolChecksCounter))
-		loggerF.Info(fmt.Sprintf("totalSimulationsStarted %d\n", totalSimulationsStarted))
-		loggerF.Info(fmt.Sprintf("dubsCheckCounter %d\n", dubsCheckCounter))
-		loggerF.Info(fmt.Sprintf("unfreshRoutesCounter %d\n", unfreshRoutesCounter))
-		loggerF.Info(fmt.Sprintf("Top percent %f\n", topPercent))
-		loggerF.Info(fmt.Sprintf("average percent = %f", totalPercent/float64(totalSimulations)))
-		loggerF.Info(fmt.Sprintf("Working time -- %v\n", time.Since(start)))
-	}
 }
 
 // package main
