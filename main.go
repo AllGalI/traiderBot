@@ -20,6 +20,7 @@ import (
 	"traiderBot/internal/observe"
 	"traiderBot/internal/orderbook"
 	"traiderBot/internal/route"
+	"traiderBot/stats"
 )
 
 var (
@@ -28,6 +29,7 @@ var (
 		"BTC":  0.002, // ≈ 100–130 USDT в зависимости от курса
 		"ETH":  0.03,  // ≈ 100 USDT
 		"BNB":  0.15,  // ≈ 100 USDT
+		"XRP":  100.0,
 	}
 )
 
@@ -177,13 +179,11 @@ func main() {
 	wrongStartAmount := 0
 	var topPercent float64 = -1
 	var totalPercent float64 = 0
-	var totalSimulations int = 0
+	totalSimulations := 0
 
 	go func() {
-
 		// ... внутри воркера
 		for symbol := range updateCh {
-			stL := time.Now()
 			symbolChecksCounter++
 			routes := echData.RouteIndex[symbol]
 
@@ -215,9 +215,6 @@ func main() {
 				)
 				totalSimulationsStarted++
 				if opp == nil {
-					if symbol == "BTCUSDT" {
-						fmt.Printf("Время работы воркера сразу после симуляции- %v\n", time.Since(stL))
-					}
 					continue
 				}
 				routeKey := route.RouteKey(opp.Route)
@@ -266,6 +263,27 @@ func main() {
 			case <-ticker.C:
 				dedup.Cleanup(cleanupMaxAge)
 			case <-logTicker.C:
+
+				err := stats.AppendRowToCSV(
+					"./stats/pipeline/data",
+					"results.csv",
+
+					time.Now().Format(time.RFC3339Nano),
+					symbolChecksCounter,
+					oldSymbols,
+					totalSimulationsStarted,
+					dubsCheckCounter,
+					unfreshRoutesCounter,
+					freshRoutesCounter,
+					wrongStartAmount,
+					okStartAmountCounter,
+					totalSimulations,
+					topPercent,
+					totalPercent/float64(totalSimulations),
+				)
+				if err != nil {
+					logger.Info(err.Error())
+				}
 
 				loggerF.StatsLog("stats.log",
 					fmt.Sprintf(`
@@ -353,6 +371,21 @@ opportunity found %d
 			}
 		}
 	}()
+
+	select {
+
+	case <-ctx.Done():
+		fmt.Println("Получен сигнал отмены Ctrl + c")
+
+		fmt.Println("Канал закрыт")
+		loggerF.Info(fmt.Sprintf("symbolChecksCounter %d\n", symbolChecksCounter))
+		loggerF.Info(fmt.Sprintf("totalSimulationsStarted %d\n", totalSimulationsStarted))
+		loggerF.Info(fmt.Sprintf("dubsCheckCounter %d\n", dubsCheckCounter))
+		loggerF.Info(fmt.Sprintf("unfreshRoutesCounter %d\n", unfreshRoutesCounter))
+		loggerF.Info(fmt.Sprintf("Top percent %f\n", topPercent))
+		loggerF.Info(fmt.Sprintf("average percent = %f", totalPercent/float64(totalSimulations)))
+		loggerF.Info(fmt.Sprintf("Working time -- %v\n", time.Since(start)))
+	}
 }
 
 // package main

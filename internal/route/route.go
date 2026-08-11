@@ -191,7 +191,9 @@ func (r *Route) UpdateFreshness(
 
 		// Обновляем статистику.
 		stats.Median = medianDuration(stats.Values)
-		appendRow(statsFoulderPath, edge.Symbol, lifetime, stats.Median, now)
+		if os.Getenv("LOG_LEVEL") == "debug" {
+			appendRow(statsFoulderPath, edge.Symbol, lifetime, stats.Median, now)
+		}
 
 		// Проверяем freshness.
 		if lifetime > maxBookAge {
