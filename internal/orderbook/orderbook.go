@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"traiderBot/internal/freshness"
 
 	"github.com/gorilla/websocket"
 )
@@ -51,7 +52,7 @@ func (p *PriceLevel) UnmarshalJSON(data []byte) error {
 type OrderBook struct {
 	Mu             sync.RWMutex
 	symbol         string
-	lastUpdateID   int64
+	LastUpdateID   int64
 	LastUpdateTime time.Time
 	Asks           []PriceLevel
 	Bids           []PriceLevel
@@ -87,7 +88,7 @@ func (ob *OrderBook) applyPartialSnapshot(lastUpdateID int64, bids, asks []Price
 
 	ob.Bids = bids
 	ob.Asks = asks
-	ob.lastUpdateID = lastUpdateID
+	ob.LastUpdateID = lastUpdateID
 	ob.LastUpdateTime = time.Now()
 }
 func (ob *OrderBook) Age() time.Duration {
@@ -109,7 +110,8 @@ type Market struct {
 	wg     sync.WaitGroup
 
 	// можно будет использовать потом для маршрутов
-	onUpdate func(symbol string)
+	onUpdate         func(symbol string)
+	FreshnessTracker *freshness.FreshnessTracker
 }
 
 func (m *Market) GetOrderbooks() map[string]*OrderBook {
@@ -131,11 +133,15 @@ func NewMarket(depth int) *Market {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
+	freshnessTracker := freshness.NewFreshnessTracker(freshness.DefaultConfig())
+	freshness.SeedTrackerFromFile(freshnessTracker, "analysis.json")
+
 	return &Market{
-		orderBooks: make(map[string]*OrderBook),
-		depth:      depth,
-		ctx:        ctx,
-		cancel:     cancel,
+		orderBooks:       make(map[string]*OrderBook),
+		depth:            depth,
+		ctx:              ctx,
+		cancel:           cancel,
+		FreshnessTracker: freshnessTracker,
 	}
 }
 
@@ -178,7 +184,7 @@ func LoadOrderBook(symbol string, depth int) (*OrderBook, error) {
 
 	return &OrderBook{
 		symbol:         strings.ToUpper(symbol),
-		lastUpdateID:   data.LastUpdateID,
+		LastUpdateID:   data.LastUpdateID,
 		LastUpdateTime: time.Now(),
 		Asks:           data.Asks,
 		Bids:           data.Bids,
@@ -349,6 +355,18 @@ func (m *Market) connectAndListen(url string) error {
 		ob.applyPartialSnapshot(event.LastUpdateID, event.Bids, event.Asks)
 
 		if onUpdate != nil {
+			now := time.Now()
+			updateEvent := freshness.UpdateEvent{
+				Symbol:    symbol,
+				Timestamp: now,
+				SeqID:     uint64(event.LastUpdateID),
+			}
+			heartBeatEvent := freshness.HeartbeatEvent{
+				Symbol:    symbol,
+				Timestamp: now,
+			}
+			m.FreshnessTracker.RecordUpdate(updateEvent)
+			m.FreshnessTracker.RecordHeartbeat(heartBeatEvent)
 			onUpdate(symbol)
 		}
 

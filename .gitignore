@@ -3,3 +3,7 @@
 *.csv
 *.png
 *.sh
+
+*.json
+
+arb-bot

@@ -2,28 +2,15 @@ package arbitrage
 
 import (
 	"math"
+	"sync"
 	"time"
 	"traiderBot/internal/dataloader"
 	"traiderBot/internal/graphb"
 	"traiderBot/internal/observe"
 	"traiderBot/internal/orderbook"
 	"traiderBot/internal/route"
+	"traiderBot/stats"
 )
-
-// // FeeRate — комиссии по паре
-// type FeeRate struct {
-// 	Maker float64
-// 	Taker float64
-// }
-
-// // SymbolFilters — нужные фильтры Binance
-// type SymbolFilters struct {
-// 	MinQty      float64
-// 	MaxQty      float64
-// 	StepSize    float64
-// 	MinNotional float64
-// 	TickSize    float64
-// }
 
 // StepResult — результат одного шага
 type StepResult struct {
@@ -58,11 +45,90 @@ func roundStep(qty, step float64) float64 {
 	return math.Floor(qty/step) * step
 }
 
+type LiquidityFailReason string
+
+const (
+	ReasonInvalidInput      LiquidityFailReason = "invalid_input"      // пустой стакан / amountIn <= 0
+	ReasonInsufficientDepth LiquidityFailReason = "insufficient_depth" // прошли весь стакан, но не набрали объём
+	ReasonBadLevelData      LiquidityFailReason = "bad_level_data"     // totalBase == 0 после прохода (кривые уровни)
+)
+
+type LiquidityFailData struct {
+	Symbol      string
+	Time        time.Time
+	IsBuy       bool
+	AmountIn    float64
+	Filled      float64 // сколько успели исполнить до отказа
+	Remaining   float64 // сколько осталось неисполненным
+	LevelsCount int
+	BestPrice   float64 // цена лучшего уровня в стакане (для контекста)
+	WorstPrice  float64 // цена худшего просмотренного уровня
+	Reason      LiquidityFailReason
+}
+
+// LiquidityFails - потокобезопасный кольцевой буфер последних отказов,
+// чтобы потом можно было посмотреть, что именно происходило со стаканом в момент отказа.
+type LiquidityFails struct {
+	mu      sync.Mutex
+	items   []LiquidityFailData
+	maxSize int
+}
+
+func NewLiquidityFails(maxSize int) *LiquidityFails {
+	return &LiquidityFails{maxSize: maxSize}
+}
+
+func (l *LiquidityFails) Add(d LiquidityFailData) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.items = append(l.items, d)
+	if len(l.items) > l.maxSize {
+		l.items = l.items[len(l.items)-l.maxSize:]
+		stats.SaveLog("./stats/notEnougthLiq.json", l.items)
+	}
+}
+
+func (l *LiquidityFails) Snapshot() []LiquidityFailData {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]LiquidityFailData, len(l.items))
+	copy(out, l.items)
+	return out
+}
+
 // walkBook покупает/продаёт, «съедая» стакан
 // isBuy = true  → тратим quote, получаем base (идём по Asks)
 // isBuy = false → тратим base, получаем quote (идём по Bids)
-func walkBook(levels []orderbook.PriceLevel, amountIn float64, isBuy bool) (avgPrice, amountOut, filledQty float64, ok bool) {
+func walkBook(
+	levels []orderbook.PriceLevel,
+	amountIn float64,
+	edge *graphb.Edge,
+	liqFails *LiquidityFails,
+) (avgPrice, amountOut, filledQty float64, ok bool) {
+
+	fail := func(reason LiquidityFailReason, filled, remaining float64) {
+		if liqFails == nil {
+			return
+		}
+		d := LiquidityFailData{
+			Symbol:      edge.Symbol,
+			Time:        time.Now(),
+			IsBuy:       edge.IsBuy,
+			AmountIn:    amountIn,
+			Filled:      filled,
+			Remaining:   remaining,
+			LevelsCount: len(levels),
+			Reason:      reason,
+		}
+		if len(levels) > 0 {
+			d.BestPrice = levels[0].Price
+			d.WorstPrice = levels[len(levels)-1].Price
+		}
+		liqFails.Add(d)
+	}
+
 	if len(levels) == 0 || amountIn <= 0 {
+		fail(ReasonInvalidInput, 0, amountIn)
 		return 0, 0, 0, false
 	}
 
@@ -77,9 +143,12 @@ func walkBook(levels []orderbook.PriceLevel, amountIn float64, isBuy bool) (avgP
 		price := level.Price
 		qty := level.Qty
 
-		if isBuy {
-			// Покупаем base за quote
-			// Сколько quote можем потратить на этом уровне
+		if price <= 0 || qty <= 0 {
+			// защита от кривых данных в стакане - такой уровень пропускаем
+			continue
+		}
+
+		if edge.IsBuy {
 			maxQuoteOnLevel := qty * price
 			usedQuote := math.Min(remaining, maxQuoteOnLevel)
 			gotBase := usedQuote / price
@@ -88,7 +157,6 @@ func walkBook(levels []orderbook.PriceLevel, amountIn float64, isBuy bool) (avgP
 			totalBase += gotBase
 			remaining -= usedQuote
 		} else {
-			// Продаём base за quote
 			usedBase := math.Min(remaining, qty)
 			gotQuote := usedBase * price
 
@@ -98,16 +166,22 @@ func walkBook(levels []orderbook.PriceLevel, amountIn float64, isBuy bool) (avgP
 		}
 	}
 
-	if remaining > 1e-8 { // не хватило ликвидности
+	if remaining > 1e-8 {
+		fail(ReasonInsufficientDepth, amountIn-remaining, remaining)
 		return 0, 0, 0, false
 	}
 
-	if isBuy {
-		avgPrice = totalQuote / totalBase
-		return avgPrice, totalBase, totalBase, true
+	if totalBase <= 0 {
+		// не должно происходить в норме, но страхуемся от NaN/деления на 0
+		fail(ReasonBadLevelData, amountIn-remaining, remaining)
+		return 0, 0, 0, false
 	}
 
 	avgPrice = totalQuote / totalBase
+
+	if edge.IsBuy {
+		return avgPrice, totalBase, totalBase, true
+	}
 	return avgPrice, totalQuote, totalBase, true
 }
 
@@ -122,6 +196,7 @@ func SimulateRoute(
 	totalPercent *float64,
 	totalSimulatedCounter *int,
 	simCounters *observe.SIMCounters,
+	liqFails *LiquidityFails,
 ) *Opportunity {
 
 	if len(route.Edges) != 3 {
@@ -163,7 +238,7 @@ func SimulateRoute(
 			return nil
 		}
 
-		avgPrice, amountOut, baseQty, ok := walkBook(levelsCopy, currentAmount, edge.IsBuy)
+		avgPrice, amountOut, baseQty, ok := walkBook(levelsCopy, currentAmount, &edge, liqFails)
 		if !ok {
 			simCounters.NotEnoughLiquidity.Add(1)
 			return nil

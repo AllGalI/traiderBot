@@ -128,7 +128,9 @@ func main() {
 
 	logger := myLogger.NewLogger()
 	loggerF, err := myLogger.NewFileLogger("app.log")
-	freshnessStats := route.NewFreshnessStats()
+
+	liqFails := arbitrage.NewLiquidityFails(1000)
+
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -188,9 +190,12 @@ func main() {
 			routes := echData.RouteIndex[symbol]
 
 			for _, r := range routes {
-				if !r.UpdateFreshness(m, maxBookAge, freshnessStats, "./stats/orderbook/data") {
-					continue
-				}
+				// if !r.UpdateFreshness(m, maxBookAge, freshnessStats, "./stats/orderbook/data") {
+				// 	continue
+				// }
+
+				m.FreshnessTracker.ZScoreForRoute(r.GetSymbols(), time.Now(), 0)
+
 				freshRoutesCounter++
 				startAsset := r.Edges[0].From
 				startAmount, ok := startAmounts[startAsset]
@@ -212,6 +217,7 @@ func main() {
 					&totalPercent,
 					&totalSimulations,
 					simCounters,
+					liqFails,
 				)
 				totalSimulationsStarted++
 				if opp == nil {
@@ -376,6 +382,7 @@ opportunity found %d
 
 	case <-ctx.Done():
 		fmt.Println("Получен сигнал отмены Ctrl + c")
+
 
 		fmt.Println("Канал закрыт")
 		loggerF.Info(fmt.Sprintf("symbolChecksCounter %d\n", symbolChecksCounter))

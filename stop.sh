@@ -1,7 +1,7 @@
 #!/bin/bash
 
-ip="202.122.49.242"
-port=62425
+ip="89.124.65.53"
+port=22
 
 eval "$(ssh-agent -s)"
 ssh-add ~/.ssh/id_rsa
