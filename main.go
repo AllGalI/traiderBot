@@ -14,6 +14,7 @@ import (
 
 	"traiderBot/internal/arbitrage"
 	"traiderBot/internal/arbitrage/deduplicate"
+	"traiderBot/internal/banstore"
 	"traiderBot/internal/dataloader"
 	"traiderBot/internal/graphb"
 	"traiderBot/internal/myLogger"
@@ -24,13 +25,16 @@ import (
 )
 
 var (
-	startAmounts = map[string]float64{
-		"USDT": 100.0, // 100 USDT
-		"BTC":  0.002, // ≈ 100–130 USDT в зависимости от курса
-		"ETH":  0.03,  // ≈ 100 USDT
-		"BNB":  0.15,  // ≈ 100 USDT
-		"XRP":  100.0,
+	ustdStartAmount = 100
+	startAmounts    = map[string]struct{}{
+		"USDT": struct{}{}, // 100 USDT
+		"BTC":  struct{}{}, // ≈ 100–130 USDT в зависимости от курса
+		"ETH":  struct{}{}, // ≈ 100 USDT
+		"BNB":  struct{}{}, // ≈ 100 USDT
+		"XRP":  struct{}{},
 	}
+
+	startAmountsVolumes = map[string]float64{}
 )
 
 type ExchangeData struct {
@@ -129,7 +133,11 @@ func main() {
 	logger := myLogger.NewLogger()
 	loggerF, err := myLogger.NewFileLogger("app.log")
 
-	liqFails := arbitrage.NewLiquidityFails(1000)
+	liqFails := arbitrage.NewLiquidityFails(100)
+	banStore := banstore.NewBanStore(
+		time.Second*1,
+		time.Second*60,
+	)
 
 	if err != nil {
 		log.Fatal(err)
@@ -183,6 +191,12 @@ func main() {
 	var totalPercent float64 = 0
 	totalSimulations := 0
 
+	select {
+	case <-updateCh:
+		startAmountsVolumes = m.CalculateSAV(float64(ustdStartAmount), startAmounts)
+		fmt.Printf("StartAmountVolumes was loaded %v", startAmountsVolumes)
+	}
+
 	go func() {
 		// ... внутри воркера
 		for symbol := range updateCh {
@@ -190,6 +204,13 @@ func main() {
 			routes := echData.RouteIndex[symbol]
 
 			for _, r := range routes {
+				routeKey := r.RouteKey()
+
+				if ok := banStore.IsBanned(banstore.RouteKey(routeKey), time.Now()); ok {
+					banStore.Ban(banstore.RouteKey(routeKey), time.Now())
+					continue
+
+				}
 				// if !r.UpdateFreshness(m, maxBookAge, freshnessStats, "./stats/orderbook/data") {
 				// 	continue
 				// }
@@ -198,32 +219,39 @@ func main() {
 
 				freshRoutesCounter++
 				startAsset := r.Edges[0].From
-				startAmount, ok := startAmounts[startAsset]
+				startAmountVolume, ok := startAmountsVolumes[startAsset]
 				if !ok {
 					wrongStartAmount++
 					continue
 				}
 				okStartAmountCounter++
 
-				opp := arbitrage.SimulateRoute(
+				result := arbitrage.SimulateRoute(
 					r,
-					startAmount,
+					startAmountVolume,
 					m,
 					echData.Fees,
 					echData.Filters,
 					0.0005,
-					// -1,
 					&topPercent,
 					&totalPercent,
 					&totalSimulations,
 					simCounters,
 					liqFails,
 				)
+
 				totalSimulationsStarted++
-				if opp == nil {
+
+				if result.Reason == arbitrage.SimulationLiquidity &&
+					result.LiquidityReason == arbitrage.ReasonInsufficientDepth {
+
+					banStore.Ban(banstore.RouteKey(routeKey), time.Now())
+				}
+				if result.Opportunity == nil {
 					continue
 				}
-				routeKey := route.RouteKey(opp.Route)
+
+				opp := result.Opportunity
 				now := time.Now()
 
 				isDup := dedup.IsDuplicate(routeKey, now)
@@ -249,11 +277,10 @@ func main() {
 				// }
 
 				// здесь логируем возможность + ages из freshness.Ages
-				// if symbol == "BTCUSDT" {
-				// 	loggerF.Info(fmt.Sprintf("Найдена возможность! Прибыль: %.4f%% (%.6f %s)\n",
-				// 		opp.ProfitPct*100, opp.ProfitAbs, opp.StartAsset))
-				// 	fmt.Printf("Время работы воркера при найденной прибыли - %v\n", time.Since(stL))
-				// }
+				if symbol == "BTCUSDT" {
+					loggerF.Info(fmt.Sprintf("Найдена возможность! Прибыль: %.4f%% (%.6f %s)\n",
+						opp.ProfitPct*100, opp.ProfitAbs, opp.StartAsset))
+				}
 
 			}
 		}
@@ -269,7 +296,6 @@ func main() {
 			case <-ticker.C:
 				dedup.Cleanup(cleanupMaxAge)
 			case <-logTicker.C:
-
 				err := stats.AppendRowToCSV(
 					"./stats/pipeline/data",
 					"results.csv",
@@ -290,6 +316,14 @@ func main() {
 				if err != nil {
 					logger.Info(err.Error())
 				}
+
+				err = banStore.SaveLog()
+
+				if err != nil {
+					logger.Info(err.Error())
+				}
+
+				// banStore.
 
 				loggerF.StatsLog("stats.log",
 					fmt.Sprintf(`
@@ -382,7 +416,6 @@ opportunity found %d
 
 	case <-ctx.Done():
 		fmt.Println("Получен сигнал отмены Ctrl + c")
-
 
 		fmt.Println("Канал закрыт")
 		loggerF.Info(fmt.Sprintf("symbolChecksCounter %d\n", symbolChecksCounter))

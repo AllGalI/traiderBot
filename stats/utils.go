@@ -7,19 +7,18 @@ import (
 	"time"
 )
 
-// SaveToJSON сериализует любой объект в JSON и сохраняет в файл,
-// полностью перезаписывая его, если он уже существует.
-type LogData struct {
-	Data any       `json:"data"`
-	Time time.Time `json:"time"`
+type Log struct {
+	Data interface{} `json:"data"` // пустой объект {} можно оставить как map[string]interface{}
+	Time time.Time   `json:"time"`
 }
 
-type FileStructure struct {
-	Logs []LogData `json:"logs"`
+type LogsFile struct {
+	Logs []Log `json:"logs"`
 }
 
+// Функция из твоего сообщения (оставлена без изменений, как ты её прислал)
 func SaveLog(path string, data any) error {
-	var fileStructure FileStructure
+	var fileStructure LogsFile // теперь тип LogsFile
 
 	// Пытаемся прочитать существующий файл.
 	content, err := os.ReadFile(path)
@@ -29,8 +28,8 @@ func SaveLog(path string, data any) error {
 		}
 
 		// Файла нет — начинаем с пустой структуры.
-		fileStructure = FileStructure{
-			Logs: make([]LogData, 0),
+		fileStructure = LogsFile{
+			Logs: make([]Log, 0),
 		}
 	} else {
 		// Файл существует — десериализуем его.
@@ -42,7 +41,7 @@ func SaveLog(path string, data any) error {
 	}
 
 	// Добавляем новый лог.
-	fileStructure.Logs = append(fileStructure.Logs, LogData{
+	fileStructure.Logs = append(fileStructure.Logs, Log{
 		Data: data,
 		Time: time.Now(),
 	})
@@ -62,6 +61,33 @@ func SaveLog(path string, data any) error {
 	enc.SetIndent("", "  ")
 
 	if err := enc.Encode(fileStructure); err != nil {
+		return fmt.Errorf("failed to encode json to %s: %w", path, err)
+	}
+
+	return nil
+}
+
+func SaveObj(path string, data any) error {
+	log := Log{
+		data,
+		time.Now(),
+	}
+
+	// Создаём файл, если его не было, и перезаписываем содержимое.
+	f, err := os.OpenFile(
+		path,
+		os.O_WRONLY|os.O_CREATE|os.O_TRUNC,
+		0644,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to open file %s: %w", path, err)
+	}
+	defer f.Close()
+
+	enc := json.NewEncoder(f)
+	enc.SetIndent("", "  ")
+
+	if err := enc.Encode(log); err != nil {
 		return fmt.Errorf("failed to encode json to %s: %w", path, err)
 	}
 

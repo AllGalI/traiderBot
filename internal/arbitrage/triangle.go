@@ -1,7 +1,9 @@
 package arbitrage
 
 import (
+	"fmt"
 	"math"
+	"os"
 	"sync"
 	"time"
 	"traiderBot/internal/dataloader"
@@ -45,12 +47,13 @@ func roundStep(qty, step float64) float64 {
 	return math.Floor(qty/step) * step
 }
 
-type LiquidityFailReason string
+type LiquidityFailReason uint8
 
 const (
-	ReasonInvalidInput      LiquidityFailReason = "invalid_input"      // пустой стакан / amountIn <= 0
-	ReasonInsufficientDepth LiquidityFailReason = "insufficient_depth" // прошли весь стакан, но не набрали объём
-	ReasonBadLevelData      LiquidityFailReason = "bad_level_data"     // totalBase == 0 после прохода (кривые уровни)
+	ReasonNone LiquidityFailReason = iota
+	ReasonInvalidInput
+	ReasonInsufficientDepth
+	ReasonBadLevelData
 )
 
 type LiquidityFailData struct {
@@ -75,16 +78,33 @@ type LiquidityFails struct {
 }
 
 func NewLiquidityFails(maxSize int) *LiquidityFails {
+	_ = os.Remove("./stats/notEnougthLiq.json")
+	fmt.Printf("file removed %s\n", "./stats/notEnougthLiq.json")
+
 	return &LiquidityFails{maxSize: maxSize}
 }
 
 func (l *LiquidityFails) Add(d LiquidityFailData) {
+	var batch []LiquidityFailData
+
 	l.mu.Lock()
-	defer l.mu.Unlock()
+
 	l.items = append(l.items, d)
-	if len(l.items) > l.maxSize {
-		l.items = l.items[len(l.items)-l.maxSize:]
-		stats.SaveLog("./stats/notEnougthLiq.json", l.items)
+
+	if len(l.items) == l.maxSize {
+		batch = l.items
+		l.items = make([]LiquidityFailData, 0, l.maxSize)
+	}
+
+	l.mu.Unlock()
+
+	if batch != nil {
+		if err := stats.SaveLog(
+			"./stats/notEnougthLiq.json",
+			batch,
+		); err != nil {
+			// обработать ошибку
+		}
 	}
 }
 
@@ -104,7 +124,13 @@ func walkBook(
 	amountIn float64,
 	edge *graphb.Edge,
 	liqFails *LiquidityFails,
-) (avgPrice, amountOut, filledQty float64, ok bool) {
+) (
+	avgPrice,
+	amountOut,
+	filledQty float64,
+	reason LiquidityFailReason,
+	ok bool,
+) {
 
 	fail := func(reason LiquidityFailReason, filled, remaining float64) {
 		if liqFails == nil {
@@ -124,12 +150,12 @@ func walkBook(
 			d.BestPrice = levels[0].Price
 			d.WorstPrice = levels[len(levels)-1].Price
 		}
-		liqFails.Add(d)
 	}
 
 	if len(levels) == 0 || amountIn <= 0 {
 		fail(ReasonInvalidInput, 0, amountIn)
-		return 0, 0, 0, false
+
+		return 0, 0, 0, ReasonInvalidInput, false
 	}
 
 	var totalQuote, totalBase float64
@@ -167,22 +193,32 @@ func walkBook(
 	}
 
 	if remaining > 1e-8 {
-		fail(ReasonInsufficientDepth, amountIn-remaining, remaining)
-		return 0, 0, 0, false
+		fail(
+			ReasonInsufficientDepth,
+			amountIn-remaining,
+			remaining,
+		)
+
+		return 0, 0, 0, ReasonInsufficientDepth, false
 	}
 
 	if totalBase <= 0 {
-		// не должно происходить в норме, но страхуемся от NaN/деления на 0
-		fail(ReasonBadLevelData, amountIn-remaining, remaining)
-		return 0, 0, 0, false
+		fail(
+			ReasonBadLevelData,
+			amountIn-remaining,
+			remaining,
+		)
+
+		return 0, 0, 0, ReasonBadLevelData, false
 	}
 
 	avgPrice = totalQuote / totalBase
 
 	if edge.IsBuy {
-		return avgPrice, totalBase, totalBase, true
+		return avgPrice, totalBase, totalBase, ReasonNone, true
 	}
-	return avgPrice, totalQuote, totalBase, true
+
+	return avgPrice, totalQuote, totalBase, ReasonNone, true
 }
 
 func SimulateRoute(
@@ -197,11 +233,13 @@ func SimulateRoute(
 	totalSimulatedCounter *int,
 	simCounters *observe.SIMCounters,
 	liqFails *LiquidityFails,
-) *Opportunity {
-
+) SimulationResult {
 	if len(route.Edges) != 3 {
 		simCounters.InvalidRouteLength.Add(1)
-		return nil
+
+		return SimulationResult{
+			Reason: SimulationInvalidRouteLength,
+		}
 	}
 
 	currentAmount := startAmount
@@ -212,36 +250,58 @@ func SimulateRoute(
 		ob, ok := market.GetOrderBook(edge.Symbol)
 		if !ok || ob == nil {
 			simCounters.OrderbookNotFound.Add(1)
-			return nil
+
+			return SimulationResult{
+				Reason: SimulationOrderbookNotFound,
+			}
 		}
 
 		ob.Mu.RLock()
+
 		var levels []orderbook.PriceLevel
 		if edge.IsBuy {
 			levels = ob.Asks
 		} else {
 			levels = ob.Bids
 		}
+
 		levelsCopy := make([]orderbook.PriceLevel, len(levels))
 		copy(levelsCopy, levels)
+
 		ob.Mu.RUnlock()
 
 		feeRate, ok := fees[edge.Symbol]
 		if !ok {
 			simCounters.FeeNotFound.Add(1)
-			return nil
+
+			return SimulationResult{
+				Reason: SimulationFeeNotFound,
+			}
 		}
 
 		filter, ok := filters[edge.Symbol]
 		if !ok {
 			simCounters.FiltersNotFound.Add(1)
-			return nil
+
+			return SimulationResult{
+				Reason: SimulationFiltersNotFound,
+			}
 		}
 
-		avgPrice, amountOut, baseQty, ok := walkBook(levelsCopy, currentAmount, &edge, liqFails)
+		avgPrice, amountOut, baseQty, liqReason, ok := walkBook(
+			levelsCopy,
+			currentAmount,
+			&edge,
+			liqFails,
+		)
+
 		if !ok {
 			simCounters.NotEnoughLiquidity.Add(1)
-			return nil
+
+			return SimulationResult{
+				Reason:          SimulationLiquidity,
+				LiquidityReason: liqReason,
+			}
 		}
 
 		fee := amountOut * feeRate.Taker
@@ -251,14 +311,20 @@ func SimulateRoute(
 
 		if qtyRounded < filter.MinQty {
 			simCounters.LotSize.Add(1)
-			return nil
+
+			return SimulationResult{
+				Reason: SimulationLotSize,
+			}
 		}
 
 		notional := qtyRounded * avgPrice
 
 		if notional < filter.MinNotional {
 			simCounters.MinNotional.Add(1)
-			return nil
+
+			return SimulationResult{
+				Reason: SimulationMinNotional,
+			}
 		}
 
 		side := "SELL"
@@ -285,30 +351,63 @@ func SimulateRoute(
 
 	if route.Edges[2].To != startAsset {
 		simCounters.StartAsset.Add(1)
-		return nil
+
+		return SimulationResult{
+			Reason: SimulationStartAsset,
+		}
 	}
 
 	profitAbs := currentAmount - startAmount
 	profitPct := profitAbs / startAmount
+
 	*topPercent = math.Max(*topPercent, profitPct)
 	*totalPercent += profitPct
 	*totalSimulatedCounter++
 
 	if profitPct < minProfitPct {
 		simCounters.ProfitTooLow.Add(1)
-		return nil
+
+		return SimulationResult{
+			Reason: SimulationProfitTooLow,
+		}
 	}
 
 	simCounters.OpportunityFound.Add(1)
 
-	return &Opportunity{
-		Route:       route,
-		Steps:       steps,
-		StartAsset:  startAsset,
-		StartAmount: startAmount,
-		EndAmount:   currentAmount,
-		ProfitAbs:   profitAbs,
-		ProfitPct:   profitPct,
-		Timestamp:   time.Now(),
+	return SimulationResult{
+		Reason: SimulationOK,
+		Opportunity: &Opportunity{
+			Route:       route,
+			Steps:       steps,
+			StartAsset:  startAsset,
+			StartAmount: startAmount,
+			EndAmount:   currentAmount,
+			ProfitAbs:   profitAbs,
+			ProfitPct:   profitPct,
+			Timestamp:   time.Now(),
+		},
 	}
+}
+
+type SimulationFailReason uint8
+
+const (
+	SimulationOK SimulationFailReason = iota
+	SimulationInvalidRouteLength
+	SimulationOrderbookNotFound
+	SimulationFeeNotFound
+	SimulationFiltersNotFound
+	SimulationLiquidity
+	SimulationLotSize
+	SimulationMinNotional
+	SimulationStartAsset
+	SimulationProfitTooLow
+)
+
+type SimulationResult struct {
+	Opportunity *Opportunity
+
+	Reason SimulationFailReason
+
+	LiquidityReason LiquidityFailReason
 }

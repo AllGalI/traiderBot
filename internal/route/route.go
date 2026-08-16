@@ -4,7 +4,7 @@ import (
 	"traiderBot/internal/graphb"
 	// "traiderBot/internal/orderbook"
 	// "traiderBot/stats"
-	
+
 	// "time"
 	"strings"
 )
@@ -12,6 +12,21 @@ import (
 // Route — последовательность из ровно 3 рёбер, образующих цикл
 type Route struct {
 	Edges []graphb.Edge
+	hash string
+}
+func (r *Route) Hash() string {
+	if r.hash != "" {
+		return r.hash
+	}
+
+	symbols := make([]string, 0, len(r.Edges))
+
+	for _, edge := range r.Edges {
+		symbols = append(symbols, edge.Symbol)
+	}
+
+	r.hash = strings.Join(symbols, "->")
+	return r.hash
 }
 
 func NewRoute(edges []graphb.Edge) Route {
@@ -28,8 +43,9 @@ func (r *Route) GetSymbols() []string {
 	return symbols
 }
 
+
 // FindTriangularRoutes находит все уникальные направленные треугольники
-func FindTriangularRoutes(graph graphb.Graph, startAmounts map[string]float64) []Route {
+func FindTriangularRoutes(graph graphb.Graph, startAmounts map[string]struct{}) []Route {
 	var routes []Route
 	seen := make(map[string]struct{})
 
@@ -129,13 +145,13 @@ func BuildRouteIndex(routes []Route) map[string][]Route {
 
 // RouteKey возвращает человекочитаемый ключ маршрута.
 // Пример: "BTCUSDT→ETHBTC→ETHUSDT"
-func RouteKey(route Route) string {
-	if len(route.Edges) == 0 {
+func (r *Route) RouteKey() string {
+	if len(r.Edges) == 0 {
 		return ""
 	}
 
-	parts := make([]string, 0, len(route.Edges))
-	for _, edge := range route.Edges {
+	parts := make([]string, 0, len(r.Edges))
+	for _, edge := range r.Edges {
 		parts = append(parts, edge.Symbol)
 	}
 	return strings.Join(parts, "→")

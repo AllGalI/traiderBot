@@ -114,6 +114,42 @@ type Market struct {
 	FreshnessTracker *freshness.FreshnessTracker
 }
 
+func (m *Market) CalculateSAV(ustdStartAmount float64, startAmounts map[string]struct{}) map[string]float64 {
+	result := make(map[string]float64, len(startAmounts))
+
+	// USDT является базовой валютой расчёта.
+	result["USDT"] = ustdStartAmount
+
+	for symbol := range startAmounts {
+		if symbol == "USDT" {
+			continue
+		}
+
+		// Например:
+		// BTC -> BTCUSDT
+		// ETH -> ETHUSDT
+		// BNB -> BNBUSDT
+		// XRP -> XRPUSDT
+		marketSymbol := symbol + "USDT"
+
+		ob, ok := m.GetOrderBook(marketSymbol)
+		if !ok {
+			continue
+		}
+
+		priceLevel, ok := ob.GetBestBid()
+
+		if !ok || priceLevel.Price <= 0 {
+			continue
+		}
+
+		// Сколько монет нужно купить на $100.
+		result[symbol] = ustdStartAmount / priceLevel.Price
+	}
+
+	return result
+}
+
 func (m *Market) GetOrderbooks() map[string]*OrderBook {
 	return m.orderBooks
 }
