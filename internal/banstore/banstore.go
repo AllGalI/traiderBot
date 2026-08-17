@@ -1,6 +1,7 @@
 package banstore
 
 import (
+	"context"
 	"sync"
 	"time"
 	"traiderBot/stats"
@@ -8,10 +9,14 @@ import (
 
 type RouteKey string
 
-type Ban struct {
+type BanState struct {
 	ExpiresAt time.Time
-	Duration  time.Duration
-	Level     uint8
+	Symbol    string
+}
+
+type BackoffState struct {
+	Level  uint8
+	Symbol string
 }
 
 type BanResult struct {
@@ -19,18 +24,26 @@ type BanResult struct {
 	ExpiresAt time.Time
 	Duration  time.Duration
 	Level     uint8
+	Symbol    string
 }
 
 type BanStore struct {
 	mu sync.RWMutex
 
-	bans map[RouteKey]Ban
+	bans     map[RouteKey]BanState
+	backoffs map[RouteKey]BackoffState
+
+	wheel *TimeWheel
 
 	initialTTL time.Duration
 	maxTTL     time.Duration
 }
 
-func NewBanStore(initialTTL, maxTTL time.Duration) *BanStore {
+func NewBanStore(
+	initialTTL time.Duration,
+	maxTTL time.Duration,
+	now time.Time,
+) *BanStore {
 	if initialTTL <= 0 {
 		panic("initialTTL must be > 0")
 	}
@@ -39,24 +52,199 @@ func NewBanStore(initialTTL, maxTTL time.Duration) *BanStore {
 		panic("maxTTL must be >= initialTTL")
 	}
 
+	const bucketDuration = 100 * time.Millisecond
+	const bucketCount = 600
+
 	return &BanStore{
-		bans:       make(map[RouteKey]Ban),
+		bans:     make(map[RouteKey]BanState),
+		backoffs: make(map[RouteKey]BackoffState),
+
+		wheel: NewTimeWheel(
+			bucketDuration,
+			bucketCount,
+			now,
+		),
+
 		initialTTL: initialTTL,
 		maxTTL:     maxTTL,
 	}
 }
 
-func (bS *BanStore) SaveLog() error {
-	err := stats.SaveObj("./stats/banstore.json", bS)
-	return err
+// IsBanned только проверяет состояние.
+// Expired записи пока не удаляет.
+// Cleanup добавим позже через time wheel.
+func (b *BanStore) IsBanned(
+	key RouteKey,
+	now time.Time,
+) bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	ban, ok := b.bans[key]
+	if !ok {
+		return false
+	}
+
+	return now.Before(ban.ExpiresAt)
 }
 
-// IsBanned возвращает true, если маршрут находится под действующим баном.
+// Ban создаёт новый бан.
 //
-// Просроченный бан удаляется сразу при обращении к нему.
-// Это пока простая реализация. На следующем этапе cleanup будет
-// вынесен в отдельный механизм.
-func (b *BanStore) IsBanned(key RouteKey, now time.Time) bool {
+// Если маршрут уже имеет действующий бан, Ban ничего не меняет.
+// Для продления существующего бана используется Renew.
+func (b *BanStore) Ban(
+	key RouteKey,
+	symbol string,
+	now time.Time,
+) BanResult {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	// Если cooldown ещё активен —
+	// ничего не меняем.
+	if existing, ok := b.bans[key]; ok {
+		if now.Before(existing.ExpiresAt) {
+			duration := existing.ExpiresAt.Sub(now)
+
+			backoff := b.backoffs[key]
+
+			return BanResult{
+				WasBanned: true,
+				ExpiresAt: existing.ExpiresAt,
+				Duration:  duration,
+				Level:     backoff.Level,
+				Symbol:    existing.Symbol,
+			}
+		}
+	}
+
+	// Cooldown закончился.
+	//
+	// Берём текущий backoff level.
+	backoff := b.backoffs[key]
+
+	duration := b.durationForLevel(backoff.Level)
+
+	expiresAt := now.Add(duration)
+
+	b.bans[key] = BanState{
+		ExpiresAt: expiresAt,
+		Symbol:    symbol,
+	}
+
+	return BanResult{
+		WasBanned: false,
+		ExpiresAt: expiresAt,
+		Duration:  duration,
+		Level:     backoff.Level,
+		Symbol:    symbol,
+	}
+}
+
+func (b *BanStore) RecordFailure(
+	key RouteKey,
+	symbol string,
+	now time.Time,
+) BanResult {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	// Защита от случайного повторного вызова.
+	if existing, ok := b.bans[key]; ok {
+		if now.Before(existing.ExpiresAt) {
+			backoff := b.backoffs[key]
+
+			return BanResult{
+				WasBanned: true,
+				ExpiresAt: existing.ExpiresAt,
+				Duration:  existing.ExpiresAt.Sub(now),
+				Level:     backoff.Level,
+				Symbol:    existing.Symbol,
+			}
+		}
+	}
+
+	backoff := b.backoffs[key]
+
+	duration := b.durationForLevel(backoff.Level)
+	expiresAt := now.Add(duration)
+
+	b.bans[key] = BanState{
+		ExpiresAt: expiresAt,
+		Symbol:    symbol,
+	}
+
+	backoff.Symbol = symbol
+
+	// Следующий failure будет использовать
+	// следующий уровень.
+	if duration < b.maxTTL {
+		backoff.Level++
+	}
+
+	b.backoffs[key] = backoff
+
+	b.wheel.Add(
+		key,
+		expiresAt,
+	)
+
+	return BanResult{
+		WasBanned: false,
+		ExpiresAt: expiresAt,
+		Duration:  duration,
+		Level:     backoff.Level - 1,
+		Symbol:    symbol,
+	}
+}
+
+func (b *BanStore) durationForLevel(
+	level uint8,
+) time.Duration {
+	duration := b.initialTTL
+
+	for i := uint8(0); i < level; i++ {
+		if duration >= b.maxTTL/2 {
+			return b.maxTTL
+		}
+
+		duration *= 2
+	}
+
+	if duration > b.maxTTL {
+		return b.maxTTL
+	}
+
+	return duration
+}
+
+func (b *BanStore) Reset(
+	key RouteKey,
+	symbol string,
+) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	backoff, ok := b.backoffs[key]
+	if !ok {
+		return false
+	}
+
+	if backoff.Symbol != symbol {
+		return false
+	}
+
+	delete(b.bans, key)
+	delete(b.backoffs, key)
+
+	return true
+}
+
+func (b *BanStore) DeleteExpired(
+	key RouteKey,
+	expiresAt time.Time,
+	now time.Time,
+) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -65,92 +253,102 @@ func (b *BanStore) IsBanned(key RouteKey, now time.Time) bool {
 		return false
 	}
 
-	if !now.Before(ban.ExpiresAt) {
-		delete(b.bans, key)
+	// Старый элемент wheel не должен удалить
+	// новый cooldown.
+	if !ban.ExpiresAt.Equal(expiresAt) {
 		return false
 	}
+
+	if now.Before(ban.ExpiresAt) {
+		return false
+	}
+
+	delete(b.bans, key)
 
 	return true
 }
 
-// Ban создаёт новый бан либо продлевает существующий.
-//
-// Для нового маршрута:
-//
-//	TTL = initialTTL
-//
-// Для уже забаненного:
-//
-//	TTL = previous TTL * 2
-//
-// TTL ограничивается maxTTL.
-//
-// Продление считается от now, а не от старого ExpiresAt.
-func (b *BanStore) Ban(key RouteKey, now time.Time) BanResult {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	existing, ok := b.bans[key]
-
-	if !ok || !now.Before(existing.ExpiresAt) {
-		ban := Ban{
-			Duration:  b.initialTTL,
-			ExpiresAt: now.Add(b.initialTTL),
-			Level:     0,
-		}
-
-		b.bans[key] = ban
-
-		return BanResult{
-			WasBanned: false,
-			ExpiresAt: ban.ExpiresAt,
-			Duration:  ban.Duration,
-			Level:     ban.Level,
-		}
-	}
-
-	duration := existing.Duration * 2
-
-	if duration > b.maxTTL {
-		duration = b.maxTTL
-	}
-
-	level := existing.Level
-	if existing.Duration < b.maxTTL {
-		level++
-	}
-
-	ban := Ban{
-		Duration:  duration,
-		ExpiresAt: now.Add(duration),
-		Level:     level,
-	}
-
-	b.bans[key] = ban
-
-	return BanResult{
-		WasBanned: true,
-		ExpiresAt: ban.ExpiresAt,
-		Duration:  ban.Duration,
-		Level:     ban.Level,
-	}
-}
-
-// Unban немедленно снимает бан.
-func (b *BanStore) Unban(key RouteKey) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	delete(b.bans, key)
-}
-
-// Len возвращает количество текущих записей.
-//
-// Пока это просто полезный диагностический метод.
-// Позже пригодится для проверки эффективности cleanup.
 func (b *BanStore) Len() int {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
 	return len(b.bans)
+}
+
+func (b *BanStore) cleanupExpired(
+	key RouteKey,
+	expiresAt time.Time,
+	now time.Time,
+) {
+	ban, ok := b.bans[key]
+	if !ok {
+		return
+	}
+
+	// Старый wheel entry.
+	if !ban.ExpiresAt.Equal(expiresAt) {
+		return
+	}
+
+	if now.Before(ban.ExpiresAt) {
+		return
+	}
+
+	delete(b.bans, key)
+}
+
+func (b *BanStore) Advance(now time.Time) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.wheel.Advance(
+		now,
+		func(key RouteKey, expiresAt time.Time) {
+			ban, ok := b.bans[key]
+			if !ok {
+				return
+			}
+
+			// Старый wheel entry.
+			//
+			// Например:
+			//
+			// old ban → expires 10:01
+			// new ban → expires 10:02
+			//
+			// Старый entry не имеет права удалить новый ban.
+			if !ban.ExpiresAt.Equal(expiresAt) {
+				return
+			}
+
+			if now.Before(ban.ExpiresAt) {
+				return
+			}
+
+			delete(b.bans, key)
+		},
+	)
+}
+
+func (b *BanStore) Start(ctx context.Context) {
+	ticker := time.NewTicker(100 * time.Millisecond)
+
+	go func() {
+		defer ticker.Stop()
+
+		for {
+			select {
+			case now := <-ticker.C:
+				b.Advance(now)
+
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+}
+
+func (bS *BanStore) SaveLog() error {
+	err := stats.SaveObj("./stats/banstore.json", bS)
+	return err
 }

@@ -25,7 +25,8 @@ import (
 )
 
 var (
-	ustdStartAmount = 100
+	ustdStartAmount = 100_000_000
+	// ustdStartAmount = 100
 	startAmounts    = map[string]struct{}{
 		"USDT": struct{}{}, // 100 USDT
 		"BTC":  struct{}{}, // ≈ 100–130 USDT в зависимости от курса
@@ -137,6 +138,7 @@ func main() {
 	banStore := banstore.NewBanStore(
 		time.Second*1,
 		time.Second*60,
+		time.Now(),
 	)
 
 	if err != nil {
@@ -204,21 +206,27 @@ func main() {
 			routes := echData.RouteIndex[symbol]
 
 			for _, r := range routes {
-				routeKey := r.RouteKey()
+				now := time.Now()
 
-				if ok := banStore.IsBanned(banstore.RouteKey(routeKey), time.Now()); ok {
-					banStore.Ban(banstore.RouteKey(routeKey), time.Now())
+				routeKey := banstore.RouteKey(r.RouteKey())
+
+				if banStore.IsBanned(routeKey, now) {
 					continue
-
 				}
 				// if !r.UpdateFreshness(m, maxBookAge, freshnessStats, "./stats/orderbook/data") {
 				// 	continue
 				// }
 
-				m.FreshnessTracker.ZScoreForRoute(r.GetSymbols(), time.Now(), 0)
+				m.FreshnessTracker.ZScoreForRoute(
+					r.GetSymbols(),
+					now,
+					0,
+				)
 
 				freshRoutesCounter++
+
 				startAsset := r.Edges[0].From
+
 				startAmountVolume, ok := startAmountsVolumes[startAsset]
 				if !ok {
 					wrongStartAmount++
@@ -242,26 +250,35 @@ func main() {
 
 				totalSimulationsStarted++
 
-				if result.Reason == arbitrage.SimulationLiquidity &&
+				if result.Reason == arbitrage.SimulationInsufficientLiquidity &&
 					result.LiquidityReason == arbitrage.ReasonInsufficientDepth {
 
-					banStore.Ban(banstore.RouteKey(routeKey), time.Now())
-				}
-				if result.Opportunity == nil {
+					banResult := banStore.RecordFailure(
+						routeKey,
+						result.LiquiditySymbol,
+						now,
+					)
+
+					_ = banResult
+
 					continue
 				}
 
 				opp := result.Opportunity
-				now := time.Now()
+				if opp == nil {
+					continue
+				}
 
-				isDup := dedup.IsDuplicate(routeKey, now)
+				now = time.Now()
+
+				isDup := dedup.IsDuplicate(r.RouteKey(), now)
 				if isDup {
 					dubsCheckCounter++
 					// можно логировать с флагом duplicate=true
 					continue
 				}
 				// новая возможность
-				dedup.MarkSeen(routeKey, now)
+				dedup.MarkSeen(r.RouteKey(), now)
 				// cB := binance.NewClient()
 
 				// for idx, step := range opp.Steps {
@@ -292,6 +309,7 @@ func main() {
 		defer ticker.Stop()
 
 		for {
+			now := time.Now()
 			select {
 			case <-ticker.C:
 				dedup.Cleanup(cleanupMaxAge)
@@ -316,6 +334,8 @@ func main() {
 				if err != nil {
 					logger.Info(err.Error())
 				}
+
+				banStore.Advance(now)
 
 				err = banStore.SaveLog()
 

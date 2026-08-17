@@ -238,7 +238,7 @@ func SimulateRoute(
 		simCounters.InvalidRouteLength.Add(1)
 
 		return SimulationResult{
-			Reason: SimulationInvalidRouteLength,
+			Reason: SimulationInvalidRoute,
 		}
 	}
 
@@ -252,7 +252,7 @@ func SimulateRoute(
 			simCounters.OrderbookNotFound.Add(1)
 
 			return SimulationResult{
-				Reason: SimulationOrderbookNotFound,
+				Reason: SimulationOrderBookNotFound,
 			}
 		}
 
@@ -288,7 +288,7 @@ func SimulateRoute(
 			}
 		}
 
-		avgPrice, amountOut, baseQty, liqReason, ok := walkBook(
+		avgPrice, amountOut, baseQty, liquidityReason, ok := walkBook(
 			levelsCopy,
 			currentAmount,
 			&edge,
@@ -299,8 +299,9 @@ func SimulateRoute(
 			simCounters.NotEnoughLiquidity.Add(1)
 
 			return SimulationResult{
-				Reason:          SimulationLiquidity,
-				LiquidityReason: liqReason,
+				Reason:          SimulationInsufficientLiquidity,
+				LiquidityReason: liquidityReason,
+				LiquiditySymbol: edge.Symbol,
 			}
 		}
 
@@ -389,15 +390,15 @@ func SimulateRoute(
 	}
 }
 
-type SimulationFailReason uint8
+type SimulationReason uint8
 
 const (
-	SimulationOK SimulationFailReason = iota
-	SimulationInvalidRouteLength
-	SimulationOrderbookNotFound
+	SimulationOK SimulationReason = iota
+	SimulationInvalidRoute
+	SimulationOrderBookNotFound
 	SimulationFeeNotFound
 	SimulationFiltersNotFound
-	SimulationLiquidity
+	SimulationInsufficientLiquidity
 	SimulationLotSize
 	SimulationMinNotional
 	SimulationStartAsset
@@ -406,8 +407,9 @@ const (
 
 type SimulationResult struct {
 	Opportunity *Opportunity
+	Reason      SimulationReason
 
-	Reason SimulationFailReason
-
+	// Заполняется только для SimulationInsufficientLiquidity.
 	LiquidityReason LiquidityFailReason
+	LiquiditySymbol string
 }
