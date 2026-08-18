@@ -25,9 +25,16 @@ import (
 )
 
 var (
-	ustdStartAmount = 100_000_000
-	// ustdStartAmount = 100
-	startAmounts    = map[string]struct{}{
+	ustdStartAmount   = 100
+	minProfitPercent float64 = 0.0005
+	liqFailsBatchSize = 100
+	minLiquidityFillRatio float64 = 0.3
+	
+	
+	// ustdStartAmount = 100_000_000
+	// minProfitPercent float64 = -0.0019
+
+	startAmounts = map[string]struct{}{
 		"USDT": struct{}{}, // 100 USDT
 		"BTC":  struct{}{}, // ≈ 100–130 USDT в зависимости от курса
 		"ETH":  struct{}{}, // ≈ 100 USDT
@@ -134,7 +141,7 @@ func main() {
 	logger := myLogger.NewLogger()
 	loggerF, err := myLogger.NewFileLogger("app.log")
 
-	liqFails := arbitrage.NewLiquidityFails(100)
+	liqFails := arbitrage.NewLiquidityFails(liqFailsBatchSize)
 	banStore := banstore.NewBanStore(
 		time.Second*1,
 		time.Second*60,
@@ -240,7 +247,8 @@ func main() {
 					m,
 					echData.Fees,
 					echData.Filters,
-					0.0005,
+					minProfitPercent,
+					minLiquidityFillRatio,
 					&topPercent,
 					&totalPercent,
 					&totalSimulations,
@@ -294,11 +302,10 @@ func main() {
 				// }
 
 				// здесь логируем возможность + ages из freshness.Ages
-				if symbol == "BTCUSDT" {
-					loggerF.Info(fmt.Sprintf("Найдена возможность! Прибыль: %.4f%% (%.6f %s)\n",
-						opp.ProfitPct*100, opp.ProfitAbs, opp.StartAsset))
+				err = opp.SaveLog()
+				if err != nil {
+					fmt.Println(err)
 				}
-
 			}
 		}
 	}()

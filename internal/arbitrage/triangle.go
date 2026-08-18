@@ -39,6 +39,11 @@ type Opportunity struct {
 	Timestamp   time.Time
 }
 
+func (op *Opportunity) SaveLog() error {
+	err := stats.SaveLog("./stats/opportunities.json", op)
+	return err
+}
+
 // roundStep округляет количество вниз до stepSize
 func roundStep(qty, step float64) float64 {
 	if step <= 0 {
@@ -116,7 +121,14 @@ func (l *LiquidityFails) Snapshot() []LiquidityFailData {
 	return out
 }
 
+const liquidityEpsilon = 1e-12
+
+// walkBook покупает/продаёт, «съедая» стакан.
+//
+// isBuy = true  → тратим quote, получаем base (идём по Asks)
+// isBuy = false → тратим base, получаем quote (идём по Bids)
 // walkBook покупает/продаёт, «съедая» стакан
+//
 // isBuy = true  → тратим quote, получаем base (идём по Asks)
 // isBuy = false → тратим base, получаем quote (идём по Bids)
 func walkBook(
@@ -131,11 +143,11 @@ func walkBook(
 	reason LiquidityFailReason,
 	ok bool,
 ) {
-
 	fail := func(reason LiquidityFailReason, filled, remaining float64) {
 		if liqFails == nil {
 			return
 		}
+
 		d := LiquidityFailData{
 			Symbol:      edge.Symbol,
 			Time:        time.Now(),
@@ -146,6 +158,7 @@ func walkBook(
 			LevelsCount: len(levels),
 			Reason:      reason,
 		}
+
 		if len(levels) > 0 {
 			d.BestPrice = levels[0].Price
 			d.WorstPrice = levels[len(levels)-1].Price
@@ -172,11 +185,15 @@ func walkBook(
 		qty := level.Qty
 
 		if price <= 0 || qty <= 0 {
-			// защита от кривых данных в стакане - такой уровень пропускаем
+			// Защита от кривых данных в стакане.
 			continue
 		}
 
 		if edge.IsBuy {
+			// BUY:
+			// amountIn  = quote
+			// amountOut = base
+
 			maxQuoteOnLevel := qty * price
 			usedQuote := math.Min(remaining, maxQuoteOnLevel)
 			gotBase := usedQuote / price
@@ -185,6 +202,10 @@ func walkBook(
 			totalBase += gotBase
 			remaining -= usedQuote
 		} else {
+			// SELL:
+			// amountIn  = base
+			// amountOut = quote
+
 			usedBase := math.Min(remaining, qty)
 			gotQuote := usedBase * price
 
@@ -195,14 +216,42 @@ func walkBook(
 	}
 
 	if remaining > 1e-8 {
+		/*
+			ВАЖНО:
+
+			Раньше здесь мы возвращали false.
+
+			Теперь возвращаем фактически исполненную часть.
+
+			SimulateRoute увидит ReasonInsufficientDepth
+			и посчитает коэффициент этой ноги.
+		*/
+
+		filledInput := amountIn - remaining
+
 		fail(
 			ReasonInsufficientDepth,
-			amountIn-remaining,
+			filledInput,
 			remaining,
 		)
 
-		return 0, 0, 0, ReasonInsufficientDepth, false
+		if totalBase <= 0 {
+			return 0, 0, 0, ReasonInsufficientDepth, false
+		}
+
+		avgPrice = totalQuote / totalBase
+
+		if edge.IsBuy {
+			return avgPrice, totalBase, totalBase, ReasonInsufficientDepth, true
+		}
+
+		return avgPrice, totalQuote, totalBase, ReasonInsufficientDepth, true
 	}
+
+	/*
+		Ниже полностью сохраняем старую логику
+		для 100% заполненного стакана.
+	*/
 
 	if totalBase <= 0 {
 		fail(
@@ -230,6 +279,7 @@ func SimulateRoute(
 	fees map[string]dataloader.FeeRate,
 	filters map[string]dataloader.SymbolFilters,
 	minProfitPct float64,
+	minLiquidityFillRatio float64,
 	topPercent *float64,
 	totalPercent *float64,
 	totalSimulatedCounter *int,
@@ -246,7 +296,22 @@ func SimulateRoute(
 
 	currentAmount := startAmount
 	startAsset := route.Edges[0].From
+
 	steps := make([]StepResult, 0, 3)
+
+	/*
+		dealCoef = какая доля исходной сделки реально
+		прошла через весь маршрут.
+
+		Изначально считаем, что ликвидности хватает на 100%.
+	*/
+	dealCoef := 1.0
+
+	/*
+		Нужен флаг, потому что при полном заполнении
+		мы вообще НЕ хотим менять старую математику.
+	*/
+	hasPartialFill := false
 
 	for _, edge := range route.Edges {
 		ob, ok := market.GetOrderBook(edge.Symbol)
@@ -261,6 +326,7 @@ func SimulateRoute(
 		ob.Mu.RLock()
 
 		var levels []orderbook.PriceLevel
+
 		if edge.IsBuy {
 			levels = ob.Asks
 		} else {
@@ -290,9 +356,15 @@ func SimulateRoute(
 			}
 		}
 
+		/*
+			Запоминаем, сколько хотели провести
+			через эту конкретную ногу.
+		*/
+		amountIn := currentAmount
+
 		avgPrice, amountOut, baseQty, liquidityReason, ok := walkBook(
 			levelsCopy,
-			currentAmount,
+			amountIn,
 			&edge,
 			liqFails,
 		)
@@ -306,6 +378,142 @@ func SimulateRoute(
 				LiquiditySymbol: edge.Symbol,
 			}
 		}
+
+		/*
+			======================================================
+			PARTIAL FILL
+			======================================================
+
+			Если стакана хватило полностью:
+
+				liquidityReason == ReasonNone
+
+			Ничего здесь не делаем.
+
+			Поэтому старый расчёт для полного маршрута
+			остаётся полностью прежним.
+		*/
+
+		if liquidityReason == ReasonInsufficientDepth {
+			hasPartialFill = true
+
+			/*
+				Определяем, сколько входной валюты реально
+				было исполнено.
+
+				BUY:
+
+					amountIn = quote
+					baseQty  = полученный base
+					avgPrice = quote / base
+
+					=> реально потраченный quote:
+
+						baseQty * avgPrice
+
+				SELL:
+
+					amountIn = base
+					baseQty  = реально проданный base
+
+					=> filledInput = baseQty
+			*/
+
+			var filledInput float64
+
+			if edge.IsBuy {
+				filledInput = baseQty * avgPrice
+			} else {
+				filledInput = baseQty
+			}
+
+			if amountIn <= 1e-12 || filledInput <= 1e-12 {
+				simCounters.NotEnoughLiquidity.Add(1)
+
+				return SimulationResult{
+					Reason:          SimulationInsufficientLiquidity,
+					LiquidityReason: liquidityReason,
+					LiquiditySymbol: edge.Symbol,
+				}
+			}
+
+			/*
+				Коэффициент заполнения этой конкретной ноги.
+
+				Например:
+
+					amountIn  = 100 USDT
+					filled    = 75 USDT
+
+					legCoef = 0.75
+			*/
+
+			legCoef := filledInput / amountIn
+
+			/*
+				Защита от кривых данных.
+			*/
+			if legCoef <= 0 {
+				simCounters.NotEnoughLiquidity.Add(1)
+
+				return SimulationResult{
+					Reason:          SimulationInsufficientLiquidity,
+					LiquidityReason: liquidityReason,
+					LiquiditySymbol: edge.Symbol,
+				}
+			}
+
+			if legCoef > 1 {
+				legCoef = 1
+			}
+
+			/*
+				Минимальный допустимый процент заполнения.
+
+				Например:
+
+					minLiquidityFillRatio = 0.50
+
+					0.90 → принимаем
+					0.75 → принимаем
+					0.50 → принимаем
+					0.49 → отклоняем
+			*/
+			if legCoef < minLiquidityFillRatio {
+				simCounters.NotEnoughLiquidity.Add(1)
+
+				return SimulationResult{
+					Reason:          SimulationInsufficientLiquidity,
+					LiquidityReason: liquidityReason,
+					LiquiditySymbol: edge.Symbol,
+				}
+			}
+
+			/*
+				Накопительный коэффициент маршрута.
+
+				Например:
+
+					первая нога: 75%
+					вторая:      80%
+					третья:     100%
+
+					dealCoef =
+						1 × 0.75 × 0.80 × 1
+						= 0.60
+			*/
+			dealCoef *= legCoef
+
+			if dealCoef > 1 {
+				dealCoef = 1
+			}
+		}
+
+		/*
+			======================================================
+			Ниже оставляем ТВОЮ исходную математику без изменений.
+			======================================================
+		*/
 
 		fee := amountOut * feeRate.Taker
 		amountOutAfterFee := amountOut - fee
@@ -331,6 +539,7 @@ func SimulateRoute(
 		}
 
 		side := "SELL"
+
 		if edge.IsBuy {
 			side = "BUY"
 		}
@@ -343,12 +552,21 @@ func SimulateRoute(
 			QuoteQty:  notional,
 			Fee:       fee,
 			FeeAsset:  edge.To,
-			AmountIn:  currentAmount,
+			AmountIn:  amountIn,
 			AmountOut: amountOutAfterFee,
 		}
 
 		steps = append(steps, step)
 
+		/*
+			Ключевой момент:
+
+			currentAmount всегда получает ФАКТИЧЕСКИЙ
+			результат этой ноги.
+
+			Если было partial fill — он уже уменьшен.
+			Если было full fill — всё как раньше.
+		*/
 		currentAmount = amountOutAfterFee
 	}
 
@@ -360,8 +578,39 @@ func SimulateRoute(
 		}
 	}
 
-	profitAbs := currentAmount - startAmount
-	profitPct := profitAbs / startAmount
+	/*
+		==========================================================
+		РАСЧЁТ ПРИБЫЛИ
+		==========================================================
+
+		Если все ноги заполнены полностью:
+
+			hasPartialFill = false
+			dealCoef       = 1
+
+		Поэтому:
+
+			actualStartAmount = startAmount
+
+		и формула будет полностью идентична старой.
+	*/
+
+	actualStartAmount := startAmount
+
+	if hasPartialFill {
+		actualStartAmount = startAmount * dealCoef
+	}
+
+	if actualStartAmount <= 1e-12 {
+		simCounters.NotEnoughLiquidity.Add(1)
+
+		return SimulationResult{
+			Reason: SimulationInsufficientLiquidity,
+		}
+	}
+
+	profitAbs := currentAmount - actualStartAmount
+	profitPct := profitAbs / actualStartAmount
 
 	*topPercent = math.Max(*topPercent, profitPct)
 	*totalPercent += profitPct
@@ -380,14 +629,22 @@ func SimulateRoute(
 	return SimulationResult{
 		Reason: SimulationOK,
 		Opportunity: &Opportunity{
-			Route:       route,
-			Steps:       steps,
-			StartAsset:  startAsset,
-			StartAmount: startAmount,
-			EndAmount:   currentAmount,
-			ProfitAbs:   profitAbs,
-			ProfitPct:   profitPct,
-			Timestamp:   time.Now(),
+			Route:      route,
+			Steps:      steps,
+			StartAsset: startAsset,
+
+			/*
+				При full fill это ровно startAmount.
+
+				При partial fill это реальный объём,
+				который фактически прошёл через весь маршрут.
+			*/
+			StartAmount: actualStartAmount,
+
+			EndAmount: currentAmount,
+			ProfitAbs: profitAbs,
+			ProfitPct: profitPct,
+			Timestamp: time.Now(),
 		},
 	}
 }
