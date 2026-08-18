@@ -150,6 +150,8 @@ func walkBook(
 			d.BestPrice = levels[0].Price
 			d.WorstPrice = levels[len(levels)-1].Price
 		}
+
+		liqFails.Add(d)
 	}
 
 	if len(levels) == 0 || amountIn <= 0 {

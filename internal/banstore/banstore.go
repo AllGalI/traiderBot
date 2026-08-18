@@ -30,13 +30,13 @@ type BanResult struct {
 type BanStore struct {
 	mu sync.RWMutex
 
-	bans     map[RouteKey]BanState
-	backoffs map[RouteKey]BackoffState
+	Bans     map[RouteKey]BanState     `json:"bans"`
+	Backoffs map[RouteKey]BackoffState `json:"backoffs"`
 
-	wheel *TimeWheel
+	Wheel *TimeWheel `json:"wheel"`
 
-	initialTTL time.Duration
-	maxTTL     time.Duration
+	InitialTTL time.Duration `json:"initialttl"`
+	MaxTTL     time.Duration `json:"maxttl"`
 }
 
 func NewBanStore(
@@ -56,17 +56,17 @@ func NewBanStore(
 	const bucketCount = 600
 
 	return &BanStore{
-		bans:     make(map[RouteKey]BanState),
-		backoffs: make(map[RouteKey]BackoffState),
+		Bans:     make(map[RouteKey]BanState),
+		Backoffs: make(map[RouteKey]BackoffState),
 
-		wheel: NewTimeWheel(
+		Wheel: NewTimeWheel(
 			bucketDuration,
 			bucketCount,
 			now,
 		),
 
-		initialTTL: initialTTL,
-		maxTTL:     maxTTL,
+		InitialTTL: initialTTL,
+		MaxTTL:     maxTTL,
 	}
 }
 
@@ -80,7 +80,7 @@ func (b *BanStore) IsBanned(
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
-	ban, ok := b.bans[key]
+	ban, ok := b.Bans[key]
 	if !ok {
 		return false
 	}
@@ -102,11 +102,11 @@ func (b *BanStore) Ban(
 
 	// Если cooldown ещё активен —
 	// ничего не меняем.
-	if existing, ok := b.bans[key]; ok {
+	if existing, ok := b.Bans[key]; ok {
 		if now.Before(existing.ExpiresAt) {
 			duration := existing.ExpiresAt.Sub(now)
 
-			backoff := b.backoffs[key]
+			backoff := b.Backoffs[key]
 
 			return BanResult{
 				WasBanned: true,
@@ -121,13 +121,13 @@ func (b *BanStore) Ban(
 	// Cooldown закончился.
 	//
 	// Берём текущий backoff level.
-	backoff := b.backoffs[key]
+	backoff := b.Backoffs[key]
 
 	duration := b.durationForLevel(backoff.Level)
 
 	expiresAt := now.Add(duration)
 
-	b.bans[key] = BanState{
+	b.Bans[key] = BanState{
 		ExpiresAt: expiresAt,
 		Symbol:    symbol,
 	}
@@ -150,9 +150,9 @@ func (b *BanStore) RecordFailure(
 	defer b.mu.Unlock()
 
 	// Защита от случайного повторного вызова.
-	if existing, ok := b.bans[key]; ok {
+	if existing, ok := b.Bans[key]; ok {
 		if now.Before(existing.ExpiresAt) {
-			backoff := b.backoffs[key]
+			backoff := b.Backoffs[key]
 
 			return BanResult{
 				WasBanned: true,
@@ -164,12 +164,12 @@ func (b *BanStore) RecordFailure(
 		}
 	}
 
-	backoff := b.backoffs[key]
+	backoff := b.Backoffs[key]
 
 	duration := b.durationForLevel(backoff.Level)
 	expiresAt := now.Add(duration)
 
-	b.bans[key] = BanState{
+	b.Bans[key] = BanState{
 		ExpiresAt: expiresAt,
 		Symbol:    symbol,
 	}
@@ -178,13 +178,13 @@ func (b *BanStore) RecordFailure(
 
 	// Следующий failure будет использовать
 	// следующий уровень.
-	if duration < b.maxTTL {
+	if duration < b.MaxTTL {
 		backoff.Level++
 	}
 
-	b.backoffs[key] = backoff
+	b.Backoffs[key] = backoff
 
-	b.wheel.Add(
+	b.Wheel.Add(
 		key,
 		expiresAt,
 	)
@@ -201,18 +201,18 @@ func (b *BanStore) RecordFailure(
 func (b *BanStore) durationForLevel(
 	level uint8,
 ) time.Duration {
-	duration := b.initialTTL
+	duration := b.InitialTTL
 
 	for i := uint8(0); i < level; i++ {
-		if duration >= b.maxTTL/2 {
-			return b.maxTTL
+		if duration >= b.MaxTTL/2 {
+			return b.MaxTTL
 		}
 
 		duration *= 2
 	}
 
-	if duration > b.maxTTL {
-		return b.maxTTL
+	if duration > b.MaxTTL {
+		return b.MaxTTL
 	}
 
 	return duration
@@ -225,7 +225,7 @@ func (b *BanStore) Reset(
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	backoff, ok := b.backoffs[key]
+	backoff, ok := b.Backoffs[key]
 	if !ok {
 		return false
 	}
@@ -234,8 +234,8 @@ func (b *BanStore) Reset(
 		return false
 	}
 
-	delete(b.bans, key)
-	delete(b.backoffs, key)
+	delete(b.Bans, key)
+	delete(b.Backoffs, key)
 
 	return true
 }
@@ -248,7 +248,7 @@ func (b *BanStore) DeleteExpired(
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	ban, ok := b.bans[key]
+	ban, ok := b.Bans[key]
 	if !ok {
 		return false
 	}
@@ -263,7 +263,7 @@ func (b *BanStore) DeleteExpired(
 		return false
 	}
 
-	delete(b.bans, key)
+	delete(b.Bans, key)
 
 	return true
 }
@@ -272,7 +272,7 @@ func (b *BanStore) Len() int {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
-	return len(b.bans)
+	return len(b.Bans)
 }
 
 func (b *BanStore) cleanupExpired(
@@ -280,7 +280,7 @@ func (b *BanStore) cleanupExpired(
 	expiresAt time.Time,
 	now time.Time,
 ) {
-	ban, ok := b.bans[key]
+	ban, ok := b.Bans[key]
 	if !ok {
 		return
 	}
@@ -294,17 +294,17 @@ func (b *BanStore) cleanupExpired(
 		return
 	}
 
-	delete(b.bans, key)
+	delete(b.Bans, key)
 }
 
 func (b *BanStore) Advance(now time.Time) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	b.wheel.Advance(
+	b.Wheel.Advance(
 		now,
 		func(key RouteKey, expiresAt time.Time) {
-			ban, ok := b.bans[key]
+			ban, ok := b.Bans[key]
 			if !ok {
 				return
 			}
@@ -325,7 +325,7 @@ func (b *BanStore) Advance(now time.Time) {
 				return
 			}
 
-			delete(b.bans, key)
+			delete(b.Bans, key)
 		},
 	)
 }
@@ -350,5 +350,6 @@ func (b *BanStore) Start(ctx context.Context) {
 
 func (bS *BanStore) SaveLog() error {
 	err := stats.SaveObj("./stats/banstore.json", bS)
+
 	return err
 }
