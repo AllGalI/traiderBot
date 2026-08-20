@@ -31,7 +31,7 @@ func (c *Client) PlaceLimitIOC(
 
 	values := url.Values{}
 
-	values.Set("symbol", step.Edge.Symbol)
+	values.Set("symbol", step.Symbol)
 
 	values.Set("side", step.Side)
 
@@ -70,7 +70,6 @@ func (c *Client) PlaceLimitIOC(
 
 	return &resp, nil
 }
-
 
 func (c *Client) PlaceMarket(
 	ctx context.Context,

@@ -25,12 +25,13 @@ import (
 )
 
 var (
-	ustdStartAmount   = 100
-	minProfitPercent float64 = 0.0005
-	liqFailsBatchSize = 100
+	ustdStartAmount               = 100
+	minProfitPercent      float64 = 0.0005
+	liqFailsBatchSize             = 100
 	minLiquidityFillRatio float64 = 0.3
-	
-	
+	// handlingSymbols = 50
+	handlingSymbols = 150
+
 	// ustdStartAmount = 100_000_000
 	// minProfitPercent float64 = -0.0019
 
@@ -158,7 +159,7 @@ func main() {
 
 	defer stop()
 
-	echData := LoadExchangeData(ctx, 50)
+	echData := LoadExchangeData(ctx, handlingSymbols)
 	simCounters := observe.NewSIMCounters()
 
 	m := orderbook.NewMarket(10)
@@ -352,6 +353,8 @@ func main() {
 
 				// banStore.
 
+				workingTime := time.Since(start)
+
 				loggerF.StatsLog("stats.log",
 					fmt.Sprintf(`
 starts from %v
@@ -380,6 +383,8 @@ average percent = %f
 
 working time -- %v
 
+symbolsChC/sec -- %f
+
 %s
 `,
 
@@ -395,7 +400,9 @@ working time -- %v
 						totalSimulations,
 						topPercent,
 						totalPercent/float64(totalSimulations),
-						time.Since(start),
+						workingTime,
+						float64(symbolChecksCounter)/workingTime.Seconds(),
+
 						fmt.Sprintf(`
 ------simFailuresCounters------
 

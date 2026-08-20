@@ -16,7 +16,7 @@ import (
 
 // StepResult — результат одного шага
 type StepResult struct {
-	Edge      graphb.Edge
+	Symbol    string
 	Side      string
 	AvgPrice  float64
 	Quantity  float64 // базовый актив
@@ -40,7 +40,14 @@ type Opportunity struct {
 }
 
 func (op *Opportunity) SaveLog() error {
-	err := stats.SaveLog("./stats/opportunities.json", op)
+	err := stats.SaveLog("./stats/opportunities.json", map[string]any{
+		"startAsset":  op.StartAsset,
+		"startAmount": op.StartAmount,
+		"endAmount":   op.EndAmount,
+		"profitAbs":   op.ProfitAbs,
+		"profitPct":   op.ProfitPct,
+		"timestamp":   op.Timestamp,
+	})
 	return err
 }
 
@@ -545,7 +552,7 @@ func SimulateRoute(
 		}
 
 		step := StepResult{
-			Edge:      edge,
+			Symbol:    edge.Symbol,
 			Side:      side,
 			AvgPrice:  avgPrice,
 			Quantity:  qtyRounded,
