@@ -26,28 +26,7 @@ type PriceLevel struct {
 	Qty   float64
 }
 
-func (p *PriceLevel) UnmarshalJSON(data []byte) error {
-	var arr []string
-	if err := json.Unmarshal(data, &arr); err != nil {
-		return err
-	}
-	if len(arr) < 2 {
-		return fmt.Errorf("invalid price level: %s", string(data))
-	}
 
-	price, err := strconv.ParseFloat(arr[0], 64)
-	if err != nil {
-		return fmt.Errorf("parse price: %w", err)
-	}
-	qty, err := strconv.ParseFloat(arr[1], 64)
-	if err != nil {
-		return fmt.Errorf("parse qty: %w", err)
-	}
-
-	p.Price = price
-	p.Qty = qty
-	return nil
-}
 
 type OrderBook struct {
 	Mu             sync.RWMutex
