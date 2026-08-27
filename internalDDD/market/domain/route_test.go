@@ -5,18 +5,18 @@ import "testing"
 func TestFindTriangularRoutes(t *testing.T) {
 	symbols := []Symbol{
 		{
-			Name:      "BTCUSDT",
-			BaseAsset: "BTC",
+			Name:       "BTCUSDT",
+			BaseAsset:  "BTC",
 			QuoteAsset: "USDT",
 		},
 		{
-			Name:      "ETHBTC",
-			BaseAsset: "ETH",
+			Name:       "ETHBTC",
+			BaseAsset:  "ETH",
 			QuoteAsset: "BTC",
 		},
 		{
-			Name:      "ETHUSDT",
-			BaseAsset: "ETH",
+			Name:       "ETHUSDT",
+			BaseAsset:  "ETH",
 			QuoteAsset: "USDT",
 		},
 	}
@@ -102,7 +102,7 @@ func TestRouteKey(t *testing.T) {
 		},
 	})
 
-	if route.Key() == "" {
+	if route.Key == "" {
 		t.Fatal("expected non-empty route key")
 	}
 }

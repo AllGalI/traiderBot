@@ -7,11 +7,9 @@ import (
 	"traiderBot/internalDDD/market/domain"
 )
 
-type MarketStructure struct {
-    Symbols    []domain.Symbol
-    Graph      domain.Graph
-    Routes     []domain.Route
-    RouteIndex domain.RouteIndex
+type MarketStructureStore interface {
+	Get() (*domain.MarketStructure, bool)
+	Set(*domain.MarketStructure)
 }
 
 type MarketStructureService struct {
@@ -29,10 +27,10 @@ func NewMarketStructureService(
 func (s *MarketStructureService) Build(
 	ctx context.Context,
 	startAssets map[string]struct{},
-) (MarketStructure, error) {
+) (domain.MarketStructure, error) {
 	symbols, err := s.symbolProvider.GetSymbols(ctx)
 	if err != nil {
-		return MarketStructure{}, fmt.Errorf(
+		return domain.MarketStructure{}, fmt.Errorf(
 			"load symbols: %w",
 			err,
 		)
@@ -40,7 +38,7 @@ func (s *MarketStructureService) Build(
 
 	graph, err := domain.NewGraph(symbols)
 	if err != nil {
-		return MarketStructure{}, fmt.Errorf(
+		return domain.MarketStructure{}, fmt.Errorf(
 			"build graph: %w",
 			err,
 		)
@@ -51,12 +49,14 @@ func (s *MarketStructureService) Build(
 		startAssets,
 	)
 
+	fmt.Println(routes[0].Key)
+
 	routeIndex := domain.BuildRouteIndex(routes)
 
-	return MarketStructure{
-		Symbols: symbols,
-		Graph:   graph,
-		Routes:  routes,
+	return domain.MarketStructure{
+		Symbols:    symbols,
+		Graph:      graph,
+		Routes:     routes,
 		RouteIndex: routeIndex,
 	}, nil
 }

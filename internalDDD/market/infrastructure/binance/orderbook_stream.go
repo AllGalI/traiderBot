@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -11,7 +12,6 @@ import (
 
 	"traiderBot/internalDDD/market/application"
 )
-
 
 type OrderBookStream struct {
 }
@@ -78,10 +78,16 @@ func (s *OrderBookStream) connectAndListen(
 		HandshakeTimeout: 10 * time.Second,
 	}
 
+	log.Printf("WebSocket: dialing %s", url)
+
 	conn, _, err := dialer.DialContext(ctx, url, nil)
+
 	if err != nil {
 		return fmt.Errorf("dial websocket: %w", err)
 	}
+
+	log.Println("WebSocket: connected")
+
 	defer conn.Close()
 
 	for {

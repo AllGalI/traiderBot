@@ -1,7 +1,6 @@
 package infrastructure
 
 import (
-	"fmt"
 	"strings"
 	"sync"
 
@@ -33,12 +32,4 @@ func (s *OrderBookStore) Set(orderBook domain.OrderBook) {
 	defer s.mu.Unlock()
 
 	s.orderBooks[strings.ToUpper(orderBook.Symbol)] = orderBook
-}
-
-func (s *OrderBookStore) Show() {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	fmt.Println(s.orderBooks)
-
 }

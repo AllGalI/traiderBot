@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"traiderBot/internalDDD/market/application"
+	"traiderBot/internalDDD/market/domain"
 )
 
 type MarketCache struct {
@@ -21,29 +21,29 @@ func NewMarketCache(path string) *MarketCache {
 
 func (c *MarketCache) Get(
 	ctx context.Context,
-) (application.MarketStructure, bool, error) {
+) (domain.MarketStructure, bool, error) {
 	select {
 	case <-ctx.Done():
-		return application.MarketStructure{}, false, ctx.Err()
+		return domain.MarketStructure{}, false, ctx.Err()
 	default:
 	}
 
 	data, err := os.ReadFile(c.path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return application.MarketStructure{}, false, nil
+			return domain.MarketStructure{}, false, nil
 		}
 
-		return application.MarketStructure{}, false, fmt.Errorf(
+		return domain.MarketStructure{}, false, fmt.Errorf(
 			"read cache file: %w",
 			err,
 		)
 	}
 
-	var structure application.MarketStructure
+	var structure domain.MarketStructure
 
 	if err := json.Unmarshal(data, &structure); err != nil {
-		return application.MarketStructure{}, false, fmt.Errorf(
+		return domain.MarketStructure{}, false, fmt.Errorf(
 			"decode market structure cache: %w",
 			err,
 		)
@@ -54,7 +54,7 @@ func (c *MarketCache) Get(
 
 func (c *MarketCache) Set(
 	ctx context.Context,
-	structure application.MarketStructure,
+	structure domain.MarketStructure,
 ) error {
 	select {
 	case <-ctx.Done():

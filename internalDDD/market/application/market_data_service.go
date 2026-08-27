@@ -3,6 +3,8 @@ package application
 import (
 	"context"
 	"fmt"
+	"log"
+	"time"
 
 	"traiderBot/internalDDD/market/domain"
 )
@@ -18,7 +20,6 @@ type OrderBookProvider interface {
 type OrderBookStore interface {
 	Get(symbol string) (domain.OrderBook, bool)
 	Set(orderBook domain.OrderBook)
-	Show()
 }
 
 type MarketDataService struct {
@@ -50,11 +51,22 @@ func (s *MarketDataService) Start(
 
 	// Сначала получаем первоначальные snapshot через REST.
 	for _, symbol := range symbols {
+		log.Printf("MarketData: requesting snapshot %s", symbol)
+
+		started := time.Now()
+
 		orderBook, err := s.provider.Get(
 			ctx,
 			symbol,
 			depth,
 		)
+
+		log.Printf(
+			"MarketData: snapshot %s finished in %s",
+			symbol,
+			time.Since(started),
+		)
+
 		if err != nil {
 			return fmt.Errorf(
 				"load order book %s: %w",
@@ -68,6 +80,10 @@ func (s *MarketDataService) Start(
 
 	// После первоначальной загрузки начинаем получать
 	// обновления через WebSocket.
+	log.Printf(
+		"MarketData: starting websocket for %d symbols",
+		len(symbols),
+	)
 	return s.stream.Subscribe(
 		ctx,
 		symbols,
@@ -82,8 +98,4 @@ func (s *MarketDataService) GetOrderBook(
 	symbol string,
 ) (domain.OrderBook, bool) {
 	return s.store.Get(symbol)
-}
-
-func (s *MarketDataService) ShowStore() {
-	s.store.Show()
 }

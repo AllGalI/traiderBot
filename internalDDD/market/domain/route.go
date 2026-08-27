@@ -4,11 +4,13 @@ import "strings"
 
 type Route struct {
 	Edges []GraphEdge
+	Key   string
 }
 
 func NewRoute(edges []GraphEdge) Route {
 	return Route{
 		Edges: edges,
+		Key:   key(edges),
 	}
 }
 
@@ -22,14 +24,14 @@ func (r Route) Symbols() []string {
 	return symbols
 }
 
-func (r Route) Key() string {
-	if len(r.Edges) == 0 {
+func key(edges []GraphEdge) string {
+	if len(edges) == 0 {
 		return ""
 	}
 
-	parts := make([]string, 0, len(r.Edges))
+	parts := make([]string, 0, len(edges))
 
-	for _, edge := range r.Edges {
+	for _, edge := range edges {
 		direction := "S"
 		if edge.Direction == Buy {
 			direction = "B"
@@ -111,7 +113,7 @@ func FindTriangularRoutes(
 
 func canonicalRouteKey(route Route) string {
 	if len(route.Edges) != 3 {
-		return route.Key()
+		return route.Key
 	}
 
 	minIndex := 0
@@ -139,4 +141,34 @@ func canonicalRouteKey(route Route) string {
 	}
 
 	return strings.Join(parts, "|")
+}
+
+func (r *Route) RouteKey() string {
+	// Находим индекс актива с минимальным именем
+	minIdx := 0
+	for i := 1; i < 3; i++ {
+		if r.Edges[i].From < r.Edges[minIdx].From {
+			minIdx = i
+		}
+	}
+
+	// Ротируем маршрут так, чтобы он начинался с минимального актива
+	rotated := NewRoute(make([]GraphEdge, 3))
+
+	for i := 0; i < 3; i++ {
+		rotated.Edges[i] = r.Edges[(minIdx+i)%3]
+	}
+
+	// Собираем ключ из последовательности From + направления
+	var b strings.Builder
+	for _, e := range rotated.Edges {
+		b.WriteString(e.From)
+		if e.IsBuy() {
+			b.WriteByte('B')
+		} else {
+			b.WriteByte('S')
+		}
+		b.WriteByte('|')
+	}
+	return b.String()
 }

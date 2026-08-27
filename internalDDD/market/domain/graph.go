@@ -67,3 +67,7 @@ func NewGraph(symbols []Symbol) (Graph, error) {
 
 	return graph, nil
 }
+
+func (e *GraphEdge) IsBuy() bool {
+	return e.Direction == Buy
+}

@@ -8,7 +8,6 @@ import (
 
 	"github.com/shopspring/decimal"
 
-	"traiderBot/internalDDD/market/application"
 	"traiderBot/internalDDD/market/domain"
 )
 
@@ -36,7 +35,7 @@ func TestMarketCacheSetAndGet(t *testing.T) {
 
 	cache := NewMarketCache(path)
 
-	expected := application.MarketStructure{
+	expected := domain.MarketStructure{
 		Symbols: []domain.Symbol{
 			{
 				Name:       "BTCUSDT",
