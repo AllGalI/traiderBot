@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"sort"
 	"testing"
 	"time"
 
@@ -65,6 +66,18 @@ func (s *integrationOrderBookStore) Set(
 	orderBook marketDomain.OrderBook,
 ) {
 	s.orderBooks[orderBook.Symbol] = orderBook
+}
+
+func (s *integrationOrderBookStore) Symbols() []string {
+	symbols := make([]string, 0, len(s.orderBooks))
+
+	for symbol := range s.orderBooks {
+		symbols = append(symbols, symbol)
+	}
+
+	sort.Strings(symbols)
+
+	return symbols
 }
 
 type integrationMarketStructureReader struct {
@@ -160,7 +173,7 @@ func TestMarketDataServiceToWorkerIntegration(
 	}
 
 	structure := &marketDomain.MarketStructure{
-		Routes:    routes,
+		Routes:     routes,
 		RouteIndex: marketDomain.BuildRouteIndex(routes),
 	}
 
@@ -262,8 +275,8 @@ func TestMarketDataServiceToWorkerIntegration(
 
 	stream.handler(
 		marketDomain.OrderBook{
-			Symbol:       "BTCUSDT",
-			LastUpdateID: 200,
+			Symbol:         "BTCUSDT",
+			LastUpdateID:   200,
 			LastUpdateTime: time.Now(),
 		},
 	)
@@ -342,7 +355,6 @@ func TestMarketDataServiceToWorkerIntegration(
 
 	t.Log("TEST: finished successfully")
 }
-
 
 func TestMarketDataServiceToWorkerProcessesMultipleUpdates(
 	t *testing.T,

@@ -1,6 +1,7 @@
 package infrastructure
 
 import (
+	"sort"
 	"strings"
 	"sync"
 
@@ -18,7 +19,9 @@ func NewOrderBookStore() *OrderBookStore {
 	}
 }
 
-func (s *OrderBookStore) Get(symbol string) (domain.OrderBook, bool) {
+func (s *OrderBookStore) Get(
+	symbol string,
+) (domain.OrderBook, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -27,9 +30,26 @@ func (s *OrderBookStore) Get(symbol string) (domain.OrderBook, bool) {
 	return orderBook, ok
 }
 
-func (s *OrderBookStore) Set(orderBook domain.OrderBook) {
+func (s *OrderBookStore) Set(
+	orderBook domain.OrderBook,
+) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.orderBooks[strings.ToUpper(orderBook.Symbol)] = orderBook
+}
+
+func (s *OrderBookStore) Symbols() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	symbols := make([]string, 0, len(s.orderBooks))
+
+	for symbol := range s.orderBooks {
+		symbols = append(symbols, symbol)
+	}
+
+	sort.Strings(symbols)
+
+	return symbols
 }

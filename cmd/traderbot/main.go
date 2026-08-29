@@ -75,6 +75,9 @@ func main() {
 	orderBookProvider := binance.NewOrderBookProvider()
 	orderBookStream := binance.NewOrderBookStream()
 	orderBookStore := infrastructure.NewOrderBookStore()
+	orderBookDebugProvider := debugDomain.NewOrderBookProvider(
+		orderBookStore,
+	)
 
 	marketDataService := marketApplication.NewMarketDataService(
 		orderBookProvider,
@@ -145,6 +148,9 @@ func main() {
 		opportunityHandler,
 		startAmount,
 	)
+	simulationDebugProvider := debugDomain.NewSimulationProvider(
+		simulationWorker.Metrics(),
+	)
 
 	// -------------------------------------------------------------------------
 	// Debug / console.
@@ -157,6 +163,8 @@ func main() {
 	)
 
 	debugService.Register(graphProvider)
+	debugService.Register(orderBookDebugProvider)
+	debugService.Register(simulationDebugProvider)
 
 	consoleHandler := console.NewHandler(
 		debugService,

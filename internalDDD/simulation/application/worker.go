@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"time"
 
 	"github.com/shopspring/decimal"
 
@@ -27,6 +28,8 @@ type Worker struct {
 	simulation      Simulator
 	opportunities   OpportunityHandler
 
+	metrics *WorkerMetrics
+
 	startAmount decimal.Decimal
 }
 
@@ -42,8 +45,13 @@ func NewWorker(
 		updates:         updates,
 		simulation:      simulation,
 		opportunities:   opportunities,
+		metrics:         NewWorkerMetrics(),
 		startAmount:     startAmount,
 	}
+}
+
+func (w *Worker) Metrics() *WorkerMetrics {
+	return w.metrics
 }
 
 func (w *Worker) Run(ctx context.Context) error {
@@ -57,23 +65,18 @@ func (w *Worker) Run(ctx context.Context) error {
 				return nil
 			}
 
-			if err := w.processUpdate(
-				ctx,
-				symbol,
-			); err != nil {
+			if err := w.runUpdate(ctx, symbol); err != nil {
 				return err
 			}
 		}
 	}
 }
 
-func (w *Worker) processUpdate(
+func (w *Worker) runUpdate(
 	ctx context.Context,
 	symbol string,
 ) error {
-	if symbol == "" {
-		return nil
-	}
+	w.metrics.RecordUpdate()
 
 	structure, ok := w.marketStructure.Get()
 	if !ok {
@@ -87,15 +90,25 @@ func (w *Worker) processUpdate(
 			return err
 		}
 
+		started := time.Now()
+
 		result := w.simulation.Simulate(
 			ctx,
 			route,
 			w.startAmount,
 		)
 
+		w.metrics.RecordSimulation(
+			time.Since(started),
+		)
+
 		if result.Opportunity == nil {
 			continue
 		}
+
+		w.metrics.RecordOpportunity(
+			result.Opportunity,
+		)
 
 		w.opportunities.Handle(
 			result.Opportunity,

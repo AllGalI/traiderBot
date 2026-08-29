@@ -21,6 +21,7 @@ type OrderBookProvider interface {
 type OrderBookStore interface {
 	Get(symbol string) (domain.OrderBook, bool)
 	Set(orderBook domain.OrderBook)
+	Symbols() []string
 }
 
 type MarketDataService struct {

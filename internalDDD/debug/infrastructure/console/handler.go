@@ -3,6 +3,8 @@ package console
 import (
 	"fmt"
 	"io"
+	"sort"
+	"strings"
 
 	"traiderBot/internalDDD/debug/application"
 )
@@ -24,6 +26,8 @@ func NewHandler(
 
 func (h *Handler) PrintProviders() []string {
 	providers := h.debugService.Providers()
+
+	sort.Strings(providers)
 
 	fmt.Fprintln(h.writer)
 	fmt.Fprintln(h.writer, "Providers:")
@@ -61,6 +65,7 @@ func (h *Handler) PrintProvider(name string) {
 	fmt.Fprintf(h.writer, " %s\n", provider.Name())
 	fmt.Fprintln(h.writer, "--------------------------------")
 	fmt.Fprintln(h.writer)
+
 	fmt.Fprintln(h.writer, "1. Snapshot")
 	fmt.Fprintln(h.writer, "2. Metrics")
 	fmt.Fprintln(h.writer, "0. Back")
@@ -113,5 +118,94 @@ func (h *Handler) PrintMetrics(name string) {
 	}
 
 	fmt.Fprintln(h.writer)
-	fmt.Fprintf(h.writer, "%v\n", metrics)
+	fmt.Fprintln(h.writer, "Metrics")
+	fmt.Fprintln(h.writer, "-------")
+
+	printMetrics(h.writer, metrics, 0)
+}
+
+func printMetrics(
+	writer io.Writer,
+	value any,
+	indent int,
+) {
+	prefix := strings.Repeat("  ", indent)
+
+	switch value := value.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(value))
+
+		for key := range value {
+			keys = append(keys, key)
+		}
+
+		sort.Strings(keys)
+
+		for _, key := range keys {
+			current := value[key]
+
+			if isNestedMetric(current) {
+				fmt.Fprintf(
+					writer,
+					"%s%s:\n",
+					prefix,
+					key,
+				)
+
+				printMetrics(
+					writer,
+					current,
+					indent+1,
+				)
+
+				continue
+			}
+
+			fmt.Fprintf(
+				writer,
+				"%s%-24s %v\n",
+				prefix,
+				key+":",
+				current,
+			)
+		}
+
+	case map[string]int:
+		keys := make([]string, 0, len(value))
+
+		for key := range value {
+			keys = append(keys, key)
+		}
+
+		sort.Strings(keys)
+
+		for _, key := range keys {
+			fmt.Fprintf(
+				writer,
+				"%s%-24s %d\n",
+				prefix,
+				key+":",
+				value[key],
+			)
+		}
+
+	default:
+		fmt.Fprintf(
+			writer,
+			"%s%v\n",
+			prefix,
+			value,
+		)
+	}
+}
+
+func isNestedMetric(value any) bool {
+	switch value.(type) {
+	case map[string]any:
+		return true
+	case map[string]int:
+		return true
+	default:
+		return false
+	}
 }

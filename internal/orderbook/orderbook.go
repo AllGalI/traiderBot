@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,8 +24,6 @@ type PriceLevel struct {
 	Price float64
 	Qty   float64
 }
-
-
 
 type OrderBook struct {
 	Mu             sync.RWMutex

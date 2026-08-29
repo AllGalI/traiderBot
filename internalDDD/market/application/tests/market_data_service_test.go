@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"testing"
 	"time"
 
@@ -80,6 +81,18 @@ func (f *fakeOrderBookStore) Set(
 	orderBook domain.OrderBook,
 ) {
 	f.orderBooks[orderBook.Symbol] = orderBook
+}
+
+func (f *fakeOrderBookStore) Symbols() []string {
+	symbols := make([]string, 0, len(f.orderBooks))
+
+	for symbol := range f.orderBooks {
+		symbols = append(symbols, symbol)
+	}
+
+	sort.Strings(symbols)
+
+	return symbols
 }
 
 func (f *fakeOrderBookStore) Show() {
