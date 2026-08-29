@@ -137,9 +137,13 @@ func (s *OrderBookStream) connectAndListen(
 }
 
 func symbolFromStream(stream string) (string, error) {
+	if stream == "" {
+		return "", fmt.Errorf("empty stream")
+	}
+
 	parts := strings.Split(stream, "@")
 
-	if len(parts) == 0 || parts[0] == "" {
+	if len(parts) < 2 || parts[0] == "" {
 		return "", fmt.Errorf("invalid stream: %q", stream)
 	}
 

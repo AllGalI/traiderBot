@@ -106,6 +106,15 @@ func TestExchangeProviderGetSymbols(t *testing.T) {
 			symbol.Constraints.PriceStep,
 		)
 	}
+
+	if !symbol.Constraints.MinNotional.Equal(
+		decimal.RequireFromString("5"),
+	) {
+		t.Errorf(
+			"MinNotional = %s, want 5",
+			symbol.Constraints.MinNotional,
+		)
+	}
 }
 
 func TestExchangeProviderGetSymbolsReturnsHTTPError(t *testing.T) {

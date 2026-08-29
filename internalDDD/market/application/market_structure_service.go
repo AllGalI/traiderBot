@@ -49,7 +49,6 @@ func (s *MarketStructureService) Build(
 		startAssets,
 	)
 
-	fmt.Println(routes[0].Key)
 
 	routeIndex := domain.BuildRouteIndex(routes)
 

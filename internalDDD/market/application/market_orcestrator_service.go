@@ -98,7 +98,13 @@ func (s *MarketService) Start(
 		symbolsLimit,
 	)
 
-	symbols = symbols[:symbolsLimit]
+	if symbolsLimit <= 0 {
+		return fmt.Errorf("symbols limit must be greater than zero")
+	}
+
+	if symbolsLimit < len(symbols) {
+		symbols = symbols[:symbolsLimit]
+	}
 
 	log.Printf(
 		"MarketService: selected symbols=%v",

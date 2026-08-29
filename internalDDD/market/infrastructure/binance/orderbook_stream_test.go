@@ -36,6 +36,16 @@ func TestSymbolFromStream(t *testing.T) {
 			stream:  "@depth10@100ms",
 			wantErr: true,
 		},
+		{
+			name:    "missing stream separator",
+			stream:  "btcusdt",
+			wantErr: true,
+		},
+		{
+			name:    "missing symbol",
+			stream:  "@",
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -63,18 +73,68 @@ func TestSymbolFromStream(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestBuildWebSocketURL(t *testing.T) {
-	got := buildWebSocketURL(
-		[]string{
-			"BTCUSDT",
-			"ETHUSDT",
+	tests := []struct {
+		name    string
+		symbols []string
+		depth   int
+		want    string
+	}{
+		{
+			name: "multiple symbols",
+			symbols: []string{
+				"BTCUSDT",
+				"ETHUSDT",
+			},
+			depth: 10,
+			want:  "wss://stream.binance.com:9443/stream?streams=btcusdt@depth10@100ms/ethusdt@depth10@100ms",
 		},
-		10,
-	)
+		{
+			name:    "single symbol",
+			symbols: []string{"BTCUSDT"},
+			depth:   5,
+			want:    "wss://stream.binance.com:9443/stream?streams=btcusdt@depth5@100ms",
+		},
+		{
+			name: "lowercase symbols",
+			symbols: []string{
+				"btcusdt",
+				"ethusdt",
+			},
+			depth: 20,
+			want:  "wss://stream.binance.com:9443/stream?streams=btcusdt@depth20@100ms/ethusdt@depth20@100ms",
+		},
+		{
+			name:    "zero depth",
+			symbols: []string{"BTCUSDT"},
+			depth:   0,
+			want:    "wss://stream.binance.com:9443/stream?streams=btcusdt@depth0@100ms",
+		},
+	}
 
-	want := "wss://stream.binance.com:9443/stream?streams=btcusdt@depth10@100ms/ethusdt@depth10@100ms"
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildWebSocketURL(tt.symbols, tt.depth)
+
+			if got != tt.want {
+				t.Errorf(
+					"buildWebSocketURL() = %q, want %q",
+					got,
+					tt.want,
+				)
+			}
+		})
+	}
+
+}
+
+func TestBuildWebSocketURLEmptySymbols(t *testing.T) {
+	got := buildWebSocketURL(nil, 10)
+
+	want := "wss://stream.binance.com:9443/stream?streams="
 
 	if got != want {
 		t.Errorf(
@@ -83,4 +143,5 @@ func TestBuildWebSocketURL(t *testing.T) {
 			want,
 		)
 	}
+
 }

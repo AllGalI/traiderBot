@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"traiderBot/internalDDD/market/application"
 	"traiderBot/internalDDD/market/domain"
 )
 
@@ -40,7 +41,7 @@ type fakeOrderBookStream struct {
 	calls     int
 	symbols   []string
 	depth     int
-	handler   OrderBookUpdateHandler
+	handler   application.OrderBookUpdateHandler
 	returnErr error
 }
 
@@ -48,7 +49,7 @@ func (f *fakeOrderBookStream) Subscribe(
 	ctx context.Context,
 	symbols []string,
 	depth int,
-	handler OrderBookUpdateHandler,
+	handler application.OrderBookUpdateHandler,
 ) error {
 	f.calls++
 	f.symbols = symbols
@@ -102,7 +103,7 @@ func TestMarketDataService_StartLoadsInitialOrderBooks(t *testing.T) {
 	stream := &fakeOrderBookStream{}
 	store := newFakeOrderBookStore()
 
-	service := NewMarketDataService(
+	service := application.NewMarketDataService(
 		provider,
 		stream,
 		store,
@@ -162,7 +163,7 @@ func TestMarketDataService_StreamUpdateReplacesOrderBook(t *testing.T) {
 	stream := &fakeOrderBookStream{}
 	store := newFakeOrderBookStore()
 
-	service := NewMarketDataService(
+	service := application.NewMarketDataService(
 		provider,
 		stream,
 		store,
@@ -210,7 +211,7 @@ func TestMarketDataService_StartProviderError(t *testing.T) {
 	stream := &fakeOrderBookStream{}
 	store := newFakeOrderBookStore()
 
-	service := NewMarketDataService(
+	service := application.NewMarketDataService(
 		provider,
 		stream,
 		store,
@@ -250,7 +251,7 @@ func TestMarketDataService_StartStreamError(t *testing.T) {
 
 	store := newFakeOrderBookStore()
 
-	service := NewMarketDataService(
+	service := application.NewMarketDataService(
 		provider,
 		stream,
 		store,
@@ -277,7 +278,7 @@ func TestMarketDataService_StartWithoutSymbols(t *testing.T) {
 	stream := &fakeOrderBookStream{}
 	store := newFakeOrderBookStore()
 
-	service := NewMarketDataService(
+	service := application.NewMarketDataService(
 		provider,
 		stream,
 		store,
@@ -298,5 +299,122 @@ func TestMarketDataService_StartWithoutSymbols(t *testing.T) {
 
 	if stream.calls != 0 {
 		t.Fatal("stream should not start")
+	}
+}
+
+func TestMarketDataService_StartSubscribesWithRequestedSymbols(t *testing.T) {
+	provider := &fakeOrderBookProvider{
+		orderBooks: map[string]domain.OrderBook{
+			"BTCUSDT": {
+				Symbol:       "BTCUSDT",
+				LastUpdateID: 100,
+			},
+			"ETHUSDT": {
+				Symbol:       "ETHUSDT",
+				LastUpdateID: 200,
+			},
+		},
+	}
+
+	stream := &fakeOrderBookStream{}
+	store := newFakeOrderBookStore()
+
+	service := application.NewMarketDataService(
+		provider,
+		stream,
+		store,
+	)
+
+	symbols := []string{
+		"BTCUSDT",
+		"ETHUSDT",
+	}
+
+	err := service.Start(
+		context.Background(),
+		symbols,
+		20,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(stream.symbols) != len(symbols) {
+		t.Fatalf(
+			"expected %d symbols, got %d",
+			len(symbols),
+			len(stream.symbols),
+		)
+	}
+
+	for i, symbol := range symbols {
+		if stream.symbols[i] != symbol {
+			t.Fatalf(
+				"expected symbol %q at index %d, got %q",
+				symbol,
+				i,
+				stream.symbols[i],
+			)
+		}
+	}
+
+	if stream.depth != 20 {
+		t.Fatalf(
+			"expected depth 20, got %d",
+			stream.depth,
+		)
+	}
+}
+
+func TestMarketDataService_GetOrderBook(t *testing.T) {
+	provider := &fakeOrderBookProvider{
+		orderBooks: map[string]domain.OrderBook{
+			"BTCUSDT": {
+				Symbol:       "BTCUSDT",
+				LastUpdateID: 100,
+			},
+		},
+	}
+
+	stream := &fakeOrderBookStream{}
+	store := newFakeOrderBookStore()
+
+	service := application.NewMarketDataService(
+		provider,
+		stream,
+		store,
+	)
+
+	err := service.Start(
+		context.Background(),
+		[]string{"BTCUSDT"},
+		10,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	orderBook, ok := service.GetOrderBook("BTCUSDT")
+	if !ok {
+		t.Fatal("expected BTCUSDT order book to exist")
+	}
+
+	if orderBook.Symbol != "BTCUSDT" {
+		t.Fatalf(
+			"expected symbol BTCUSDT, got %s",
+			orderBook.Symbol,
+		)
+	}
+
+	if orderBook.LastUpdateID != 100 {
+		t.Fatalf(
+			"expected update ID 100, got %d",
+			orderBook.LastUpdateID,
+		)
+	}
+
+	_, ok = service.GetOrderBook("ETHUSDT")
+	if ok {
+		t.Fatal("expected ETHUSDT order book to be absent")
 	}
 }
