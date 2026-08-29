@@ -1,12 +1,15 @@
 package application
 
-import "github.com/shopspring/decimal"
+import (
+	"context"
+
+	"github.com/shopspring/decimal"
+)
 
 type FeeConfig struct {
-	Rate  decimal.Decimal
-	Asset string
+	Rate decimal.Decimal
 }
 
 type FeeProvider interface {
-	Get(symbol string) (FeeConfig, bool)
+	Get(ctx context.Context, symbol string) (FeeConfig, bool)
 }

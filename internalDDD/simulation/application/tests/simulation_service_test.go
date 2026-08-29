@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"context"
 	"testing"
 
 	"github.com/shopspring/decimal"
@@ -27,6 +28,7 @@ type integrationFeeProvider struct {
 }
 
 func (p *integrationFeeProvider) Get(
+	ctx context.Context,
 	symbol string,
 ) (simulationApplication.FeeConfig, bool) {
 	fee, ok := p.fees[symbol]
@@ -145,16 +147,13 @@ func TestSimulationServiceUsesMarketStructureSymbolProvider(t *testing.T) {
 	fees := &integrationFeeProvider{
 		fees: map[string]simulationApplication.FeeConfig{
 			"BTCUSDT": {
-				Rate:  decimal.Zero,
-				Asset: "USDT",
+				Rate: decimal.Zero,
 			},
 			"ETHBTC": {
-				Rate:  decimal.Zero,
-				Asset: "BTC",
+				Rate: decimal.Zero,
 			},
 			"ETHUSDT": {
-				Rate:  decimal.Zero,
-				Asset: "USDT",
+				Rate: decimal.Zero,
 			},
 		},
 	}
@@ -163,11 +162,13 @@ func TestSimulationServiceUsesMarketStructureSymbolProvider(t *testing.T) {
 		orderBooks,
 		fees,
 		symbolProvider,
+		alwaysFreshPolicy{},
 		decimal.RequireFromString("0.3"),
 		decimal.Zero,
 	)
 
 	result := service.Simulate(
+		context.Background(),
 		integrationTriangleRoute(),
 		decimal.NewFromInt(100),
 	)
@@ -257,16 +258,13 @@ func TestSimulationServiceIntegrationOrderBookMissing(t *testing.T) {
 	fees := &integrationFeeProvider{
 		fees: map[string]simulationApplication.FeeConfig{
 			"BTCUSDT": {
-				Rate:  decimal.Zero,
-				Asset: "USDT",
+				Rate: decimal.Zero,
 			},
 			"ETHBTC": {
-				Rate:  decimal.Zero,
-				Asset: "BTC",
+				Rate: decimal.Zero,
 			},
 			"ETHUSDT": {
-				Rate:  decimal.Zero,
-				Asset: "USDT",
+				Rate: decimal.Zero,
 			},
 		},
 	}
@@ -275,11 +273,13 @@ func TestSimulationServiceIntegrationOrderBookMissing(t *testing.T) {
 		orderBooks,
 		fees,
 		symbolProvider,
+		alwaysFreshPolicy{},
 		decimal.RequireFromString("0.3"),
 		decimal.Zero,
 	)
 
 	result := service.Simulate(
+		context.Background(),
 		integrationTriangleRoute(),
 		decimal.NewFromInt(100),
 	)
@@ -339,16 +339,13 @@ func TestSimulationServiceIntegrationSymbolMissing(t *testing.T) {
 	fees := &integrationFeeProvider{
 		fees: map[string]simulationApplication.FeeConfig{
 			"BTCUSDT": {
-				Rate:  decimal.Zero,
-				Asset: "USDT",
+				Rate: decimal.Zero,
 			},
 			"ETHBTC": {
-				Rate:  decimal.Zero,
-				Asset: "BTC",
+				Rate: decimal.Zero,
 			},
 			"ETHUSDT": {
-				Rate:  decimal.Zero,
-				Asset: "USDT",
+				Rate: decimal.Zero,
 			},
 		},
 	}
@@ -356,12 +353,14 @@ func TestSimulationServiceIntegrationSymbolMissing(t *testing.T) {
 	service := simulationApplication.NewSimulationService(
 		orderBooks,
 		fees,
-		symbolProvider,
+		symbolProvider,		
+		alwaysFreshPolicy{},
 		decimal.RequireFromString("0.3"),
 		decimal.Zero,
 	)
 
 	result := service.Simulate(
+		context.Background(),
 		integrationTriangleRoute(),
 		decimal.NewFromInt(100),
 	)

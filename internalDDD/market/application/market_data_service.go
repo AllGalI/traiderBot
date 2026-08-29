@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"traiderBot/internalDDD/market/domain"
@@ -26,6 +27,8 @@ type MarketDataService struct {
 	provider OrderBookProvider
 	stream   OrderBookStream
 	store    OrderBookStore
+
+	updates chan string
 }
 
 func NewMarketDataService(
@@ -37,6 +40,7 @@ func NewMarketDataService(
 		provider: provider,
 		stream:   stream,
 		store:    store,
+		updates:  make(chan string, 1024),
 	}
 }
 
@@ -84,18 +88,49 @@ func (s *MarketDataService) Start(
 		"MarketData: starting websocket for %d symbols",
 		len(symbols),
 	)
+
 	return s.stream.Subscribe(
 		ctx,
 		symbols,
 		depth,
 		func(orderBook domain.OrderBook) {
 			s.store.Set(orderBook)
+			s.publishUpdate(orderBook.Symbol)
 		},
 	)
+
 }
 
 func (s *MarketDataService) GetOrderBook(
 	symbol string,
 ) (domain.OrderBook, bool) {
 	return s.store.Get(symbol)
+}
+
+func (s *MarketDataService) Updates() <-chan string {
+	return s.updates
+}
+
+func (s *MarketDataService) publishUpdate(symbol string) {
+	symbol = strings.ToUpper(strings.TrimSpace(symbol))
+
+	if symbol == "" {
+		return
+	}
+
+	// Канал является сигналом, что symbol изменился.
+	//
+	// Сам актуальный OrderBook уже находится в store.
+	//
+	// Если worker временно не успевает обработать событие,
+	// не блокируем WebSocket. При следующем событии symbol
+	// worker снова получит актуальное состояние из store.
+	select {
+	case s.updates <- symbol:
+	default:
+		log.Printf(
+			"MarketData: updates channel full, dropping update %s", symbol,
+		)
+	}
+
 }

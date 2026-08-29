@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"context"
 	"testing"
 
 	"github.com/shopspring/decimal"
@@ -11,6 +12,7 @@ import (
 )
 
 func TestSimulationService_ProfitCalculation_FullFill(t *testing.T) {
+	ctx := context.Background()
 
 	store := &orderBookReaderStub{
 		orderBooks: map[string]marketDomain.OrderBook{
@@ -28,16 +30,13 @@ func TestSimulationService_ProfitCalculation_FullFill(t *testing.T) {
 	fees := &feeProviderStub{
 		fees: map[string]simulationApplication.FeeConfig{
 			"BTCUSDT": {
-				Rate:  decimal.Zero,
-				Asset: "BTC",
+				Rate: decimal.Zero,
 			},
 			"ETHBTC": {
-				Rate:  decimal.Zero,
-				Asset: "ETH",
+				Rate: decimal.Zero,
 			},
 			"ETHUSDT": {
-				Rate:  decimal.Zero,
-				Asset: "USDT",
+				Rate: decimal.Zero,
 			},
 		},
 	}
@@ -54,11 +53,13 @@ func TestSimulationService_ProfitCalculation_FullFill(t *testing.T) {
 		store,
 		fees,
 		symbols,
+		alwaysFreshPolicy{},
 		decimal.RequireFromString("0.3"),
 		decimal.RequireFromString("0.01"),
 	)
 
 	result := service.Simulate(
+		ctx,
 		triangleRoute(),
 		decimal.NewFromInt(100),
 	)
@@ -116,6 +117,7 @@ func TestSimulationService_ProfitCalculation_FullFill(t *testing.T) {
 }
 
 func TestSimulationService_ProfitCalculation_PartialFill(t *testing.T) {
+	ctx := context.Background()
 
 	store := &orderBookReaderStub{
 		orderBooks: map[string]marketDomain.OrderBook{
@@ -133,16 +135,13 @@ func TestSimulationService_ProfitCalculation_PartialFill(t *testing.T) {
 	fees := &feeProviderStub{
 		fees: map[string]simulationApplication.FeeConfig{
 			"BTCUSDT": {
-				Rate:  decimal.Zero,
-				Asset: "BTC",
+				Rate: decimal.Zero,
 			},
 			"ETHBTC": {
-				Rate:  decimal.Zero,
-				Asset: "ETH",
+				Rate: decimal.Zero,
 			},
 			"ETHUSDT": {
-				Rate:  decimal.Zero,
-				Asset: "USDT",
+				Rate: decimal.Zero,
 			},
 		},
 	}
@@ -159,11 +158,22 @@ func TestSimulationService_ProfitCalculation_PartialFill(t *testing.T) {
 		store,
 		fees,
 		symbols,
+		alwaysFreshPolicy{},
 		decimal.RequireFromString("0.3"),
 		decimal.RequireFromString("0.005"),
 	)
 
+	// service := simulationApplication.NewSimulationService(
+	// 	store,
+	// 	fees,
+	// 	symbols,
+	// 	alwaysFreshPolicy{},
+	// 	decimal.RequireFromString("0.3"),
+	// 	decimal.RequireFromString("0.01"),
+	// )
+
 	result := service.Simulate(
+		ctx,
 		triangleRoute(),
 		decimal.NewFromInt(100),
 	)
@@ -236,6 +246,7 @@ func TestSimulationService_ProfitCalculation_PartialFill(t *testing.T) {
 }
 
 func TestSimulationService_ProfitTooLow(t *testing.T) {
+	ctx := context.Background()
 
 	store := &orderBookReaderStub{
 		orderBooks: map[string]marketDomain.OrderBook{
@@ -253,16 +264,13 @@ func TestSimulationService_ProfitTooLow(t *testing.T) {
 	fees := &feeProviderStub{
 		fees: map[string]simulationApplication.FeeConfig{
 			"BTCUSDT": {
-				Rate:  decimal.Zero,
-				Asset: "BTC",
+				Rate: decimal.Zero,
 			},
 			"ETHBTC": {
-				Rate:  decimal.Zero,
-				Asset: "ETH",
+				Rate: decimal.Zero,
 			},
 			"ETHUSDT": {
-				Rate:  decimal.Zero,
-				Asset: "USDT",
+				Rate: decimal.Zero,
 			},
 		},
 	}
@@ -286,11 +294,13 @@ func TestSimulationService_ProfitTooLow(t *testing.T) {
 		store,
 		fees,
 		symbols,
+		alwaysFreshPolicy{},
 		decimal.RequireFromString("0.3"),
 		decimal.RequireFromString("0.005"),
 	)
 
 	result := service.Simulate(
+		ctx,
 		triangleRoute(),
 		decimal.NewFromInt(100),
 	)
@@ -320,6 +330,7 @@ func TestSimulationService_ProfitTooLow(t *testing.T) {
 }
 
 func TestSimulationService_ProfitThresholdBoundary(t *testing.T) {
+	ctx := context.Background()
 
 	store := &orderBookReaderStub{
 		orderBooks: map[string]marketDomain.OrderBook{
@@ -334,16 +345,13 @@ func TestSimulationService_ProfitThresholdBoundary(t *testing.T) {
 	fees := &feeProviderStub{
 		fees: map[string]simulationApplication.FeeConfig{
 			"BTCUSDT": {
-				Rate:  decimal.Zero,
-				Asset: "BTC",
+				Rate: decimal.Zero,
 			},
 			"ETHBTC": {
-				Rate:  decimal.Zero,
-				Asset: "ETH",
+				Rate: decimal.Zero,
 			},
 			"ETHUSDT": {
-				Rate:  decimal.Zero,
-				Asset: "USDT",
+				Rate: decimal.Zero,
 			},
 		},
 	}
@@ -363,11 +371,13 @@ func TestSimulationService_ProfitThresholdBoundary(t *testing.T) {
 		store,
 		fees,
 		symbols,
+		alwaysFreshPolicy{},
 		decimal.RequireFromString("0.3"),
 		minProfitPct,
 	)
 
 	result := service.Simulate(
+		ctx,
 		triangleRoute(),
 		decimal.NewFromInt(100),
 	)
@@ -395,27 +405,26 @@ func TestSimulationService_ProfitThresholdBoundary(t *testing.T) {
 }
 
 func TestSimulationService_ProfitCalculation_UsesExecutedAmount(t *testing.T) {
+	ctx := context.Background()
+
 	store := &orderBookReaderStub{
 		orderBooks: map[string]marketDomain.OrderBook{
-			"BTCUSDT":  newOrderBook("BTCUSDT", "100000", "0.0005"),
-			"ETHBTC":   newOrderBook("ETHBTC", "0.05", "1"),
-			"ETHUSDT":  newOrderBook("ETHUSDT", "5100", "1"),
+			"BTCUSDT": newOrderBook("BTCUSDT", "100000", "0.0005"),
+			"ETHBTC":  newOrderBook("ETHBTC", "0.05", "1"),
+			"ETHUSDT": newOrderBook("ETHUSDT", "5100", "1"),
 		},
 	}
 
 	fees := &feeProviderStub{
 		fees: map[string]simulationApplication.FeeConfig{
 			"BTCUSDT": {
-				Rate:  decimal.Zero,
-				Asset: "BTC",
+				Rate: decimal.Zero,
 			},
 			"ETHBTC": {
-				Rate:  decimal.Zero,
-				Asset: "ETH",
+				Rate: decimal.Zero,
 			},
 			"ETHUSDT": {
-				Rate:  decimal.Zero,
-				Asset: "USDT",
+				Rate: decimal.Zero,
 			},
 		},
 	}
@@ -432,11 +441,13 @@ func TestSimulationService_ProfitCalculation_UsesExecutedAmount(t *testing.T) {
 		store,
 		fees,
 		symbols,
+		alwaysFreshPolicy{},
 		decimal.RequireFromString("0.30"),
 		decimal.RequireFromString("0.01"),
 	)
 
 	result := service.Simulate(
+		ctx,
 		triangleRoute(),
 		decimal.NewFromInt(100),
 	)

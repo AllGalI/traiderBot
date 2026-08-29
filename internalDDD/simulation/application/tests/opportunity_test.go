@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -35,16 +36,13 @@ func TestSimulationService_Opportunity_FullFill(t *testing.T) {
 	fees := &feeProviderStub{
 		fees: map[string]simulationApplication.FeeConfig{
 			"BTCUSDT": {
-				Rate:  decimal.Zero,
-				Asset: "BTC",
+				Rate: decimal.Zero,
 			},
 			"ETHBTC": {
-				Rate:  decimal.Zero,
-				Asset: "ETH",
+				Rate: decimal.Zero,
 			},
 			"ETHUSDT": {
-				Rate:  decimal.Zero,
-				Asset: "USDT",
+				Rate: decimal.Zero,
 			},
 		},
 	}
@@ -61,6 +59,7 @@ func TestSimulationService_Opportunity_FullFill(t *testing.T) {
 		store,
 		fees,
 		symbols,
+		alwaysFreshPolicy{},
 		decimal.RequireFromString("0.30"),
 		decimal.Zero,
 	)
@@ -70,7 +69,7 @@ func TestSimulationService_Opportunity_FullFill(t *testing.T) {
 
 	before := time.Now()
 
-	result := service.Simulate(route, startAmount)
+	result := service.Simulate(context.Background(), route, startAmount)
 
 	after := time.Now()
 

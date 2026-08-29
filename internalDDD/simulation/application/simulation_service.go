@@ -1,6 +1,7 @@
 package application
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -9,6 +10,10 @@ import (
 	marketDomain "traiderBot/internalDDD/market/domain"
 	simulationDomain "traiderBot/internalDDD/simulation/domain"
 )
+
+type OrderBookFreshness interface {
+	IsFresh(symbol string, updatedAt time.Time, now time.Time) bool
+}
 
 type OrderBookReader interface {
 	Get(symbol string) (marketDomain.OrderBook, bool)
@@ -20,29 +25,33 @@ type SymbolProvider interface {
 
 type SimulationService struct {
 	orderBooks            OrderBookReader
-	fees                  FeeProvider
+	feeProvider           FeeProvider
 	symbols               SymbolProvider
+	freshness             OrderBookFreshness
 	minLiquidityFillRatio decimal.Decimal
 	minProfitPct          decimal.Decimal
 }
 
 func NewSimulationService(
 	orderBooks OrderBookReader,
-	fees FeeProvider,
+	feeProvider FeeProvider,
 	symbols SymbolProvider,
+	freshness OrderBookFreshness,
 	minLiquidityFillRatio decimal.Decimal,
 	minProfitPct decimal.Decimal,
 ) *SimulationService {
 	return &SimulationService{
 		orderBooks:            orderBooks,
-		fees:                  fees,
+		feeProvider:           feeProvider,
 		symbols:               symbols,
+		freshness:             freshness,
 		minLiquidityFillRatio: minLiquidityFillRatio,
 		minProfitPct:          minProfitPct,
 	}
 }
 
 func (s *SimulationService) Simulate(
+	ctx context.Context,
 	route marketDomain.Route,
 	startAmount decimal.Decimal,
 ) simulationDomain.SimulationResult {
@@ -67,12 +76,29 @@ func (s *SimulationService) Simulate(
 		len(route.Edges),
 	)
 
+	if err := ctx.Err(); err != nil {
+		return simulationDomain.SimulationResult{
+			Reason: simulationDomain.SimulationInvalidStartAmount,
+		}
+	}
+
 	for _, edge := range route.Edges {
 		orderBook, ok := s.orderBooks.Get(edge.Symbol)
 
 		if !ok {
 			return simulationDomain.SimulationResult{
 				Reason: simulationDomain.SimulationOrderBookNotFound,
+			}
+		}
+
+		if s.freshness != nil &&
+			!s.freshness.IsFresh(
+				edge.Symbol,
+				orderBook.LastUpdateTime,
+				time.Now(),
+			) {
+			return simulationDomain.SimulationResult{
+				Reason: simulationDomain.SimulationOrderBookStale,
 			}
 		}
 
@@ -84,8 +110,7 @@ func (s *SimulationService) Simulate(
 			}
 		}
 
-		fee, ok := s.fees.Get(edge.Symbol)
-
+		fee, ok := s.feeProvider.Get(ctx, edge.Symbol)
 		if !ok {
 			return simulationDomain.SimulationResult{
 				Reason: simulationDomain.SimulationFeeNotFound,
@@ -99,7 +124,7 @@ func (s *SimulationService) Simulate(
 			currentAmount,
 			s.minLiquidityFillRatio,
 			fee.Rate,
-			fee.Asset,
+			edge.To,
 		)
 
 		if err != nil {

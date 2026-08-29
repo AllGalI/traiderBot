@@ -1,6 +1,8 @@
 package tests
 
 import (
+	"context"
+
 	"github.com/shopspring/decimal"
 
 	marketDomain "traiderBot/internalDDD/market/domain"
@@ -23,6 +25,7 @@ type feeProviderStub struct {
 }
 
 func (s *feeProviderStub) Get(
+	ctx context.Context,
 	symbol string,
 ) (simulationApplication.FeeConfig, bool) {
 	fee, ok := s.fees[symbol]

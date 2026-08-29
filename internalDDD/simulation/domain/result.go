@@ -13,6 +13,7 @@ const (
 	SimulationInsufficientLiquidity
 	SimulationFiltersNotFound
 	SimulationProfitTooLow
+	SimulationOrderBookStale
 )
 
 type SimulationResult struct {
