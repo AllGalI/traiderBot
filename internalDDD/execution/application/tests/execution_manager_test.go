@@ -13,9 +13,6 @@ import (
 	simulationDomain "traiderBot/internalDDD/simulation/domain"
 )
 
-
-
-
 type fakeExecutionOrderQueryWithRequest struct {
 	result executionDomain.OrderExecutionResult
 
@@ -210,4 +207,136 @@ func (f *fakeExchangeExecutorCaptureRequest) Execute(
 		SubmittedAt: now,
 		FilledAt:    now,
 	}, nil
+}
+
+func TestExecutionManagerExecutesAllStepsAndPropagatesAmounts(t *testing.T) {
+	opportunity := simulationDomain.Opportunity{
+		StartAsset: "USDT",
+
+		RequestedStartAmount: decimal.NewFromInt(100),
+		ExecutedStartAmount:  decimal.NewFromInt(100),
+
+		Steps: []simulationDomain.StepResult{
+			{
+				AmountIn:  decimal.NewFromInt(100),
+				AmountOut: decimal.NewFromInt(101),
+				Edge: marketDomain.GraphEdge{
+					From:      "USDT",
+					To:        "BTC",
+					Symbol:    "BTCUSDT",
+					Direction: marketDomain.Buy,
+				},
+			},
+			{
+				AmountIn:  decimal.NewFromInt(101),
+				AmountOut: decimal.NewFromFloat(102.5),
+				Edge: marketDomain.GraphEdge{
+					From:      "BTC",
+					To:        "ETH",
+					Symbol:    "ETHBTC",
+					Direction: marketDomain.Buy,
+				},
+			},
+			{
+				AmountIn:  decimal.NewFromFloat(102.5),
+				AmountOut: decimal.NewFromFloat(105),
+				Edge: marketDomain.GraphEdge{
+					From:      "ETH",
+					To:        "USDT",
+					Symbol:    "ETHUSDT",
+					Direction: marketDomain.Sell,
+				},
+			},
+		},
+	}
+
+	executor := &fakeExchangeExecutor{
+		results: []decimal.Decimal{
+			decimal.NewFromInt(101),
+			decimal.NewFromFloat(102.5),
+			decimal.NewFromInt(105),
+		},
+	}
+
+	manager := executionApplication.NewExecutionManager(
+		executor,
+		nil,
+		fakeExecutionPolicy{},
+	)
+
+	execution, err := manager.Execute(
+		context.Background(),
+		&opportunity,
+	)
+	if err != nil {
+		t.Fatalf("unexpected execution error: %v", err)
+	}
+
+	if execution.Status != executionDomain.ExecutionCompleted {
+		t.Fatalf(
+			"expected completed execution, got %s",
+			execution.Status,
+		)
+	}
+
+	if len(execution.Orders) != 3 {
+		t.Fatalf(
+			"expected 3 orders, got %d",
+			len(execution.Orders),
+		)
+	}
+
+	expectedAmounts := []decimal.Decimal{
+		decimal.NewFromInt(100),
+		decimal.NewFromInt(101),
+		decimal.NewFromFloat(102.5),
+	}
+
+	for i, expected := range expectedAmounts {
+		if !executor.amountsIn[i].Equal(expected) {
+			t.Fatalf(
+				"step %d: expected input amount %s, got %s",
+				i,
+				expected,
+				executor.amountsIn[i],
+			)
+		}
+	}
+
+	expectedFinalAmount := decimal.NewFromInt(105)
+
+	if !execution.FinalAmount.Equal(expectedFinalAmount) {
+		t.Fatalf(
+			"expected final amount %s, got %s",
+			expectedFinalAmount,
+			execution.FinalAmount,
+		)
+	}
+
+	if !execution.CurrentAmount.Equal(expectedFinalAmount) {
+		t.Fatalf(
+			"expected current amount %s, got %s",
+			expectedFinalAmount,
+			execution.CurrentAmount,
+		)
+	}
+
+	for i, order := range execution.Orders {
+		if order.StepIndex != i {
+			t.Fatalf(
+				"order %d: expected step index %d, got %d",
+				i,
+				i,
+				order.StepIndex,
+			)
+		}
+
+		if order.Status != executionDomain.OrderFilled {
+			t.Fatalf(
+				"order %d: expected filled status, got %s",
+				i,
+				order.Status,
+			)
+		}
+	}
 }

@@ -10,4 +10,13 @@ type orderResponse struct {
 	Side               string `json:"side"`
 	ExecutedQty        string `json:"executedQty"`
 	CumulativeQuoteQty string `json:"cummulativeQuoteQty"`
+
+	Fills []orderFill `json:"fills"`
+}
+
+type orderFill struct {
+	Price           string `json:"price"`
+	Qty             string `json:"qty"`
+	Commission      string `json:"commission"`
+	CommissionAsset string `json:"commissionAsset"`
 }

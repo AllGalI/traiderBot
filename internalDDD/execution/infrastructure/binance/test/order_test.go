@@ -104,6 +104,14 @@ func TestClientExecuteMarketBuy(t *testing.T) {
 				"side":                "BUY",
 				"executedQty":         "0.00179",
 				"cummulativeQuoteQty": "99.80",
+				"fills": []map[string]any{
+					{
+						"price":           "55700",
+						"qty":             "0.00179",
+						"commission":      "0.00000179",
+						"commissionAsset": "BTC",
+					},
+				},
 			}
 
 			writeJSON(
@@ -233,6 +241,22 @@ func TestClientExecuteMarketBuy(t *testing.T) {
 		t.Fatalf(
 			"expected filled status, got %s",
 			result.Status,
+		)
+	}
+
+	if !result.Fee.Equal(
+		decimal.RequireFromString("0.00000179"),
+	) {
+		t.Fatalf(
+			"expected fee 0.00000179, got %s",
+			result.Fee,
+		)
+	}
+
+	if result.FeeAsset != "BTC" {
+		t.Fatalf(
+			"expected fee asset BTC, got %s",
+			result.FeeAsset,
 		)
 	}
 

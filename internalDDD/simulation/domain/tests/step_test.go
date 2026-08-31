@@ -244,3 +244,4 @@ func TestSimulateStep_Buy_PartialFill_Accepted(t *testing.T) {
 		)
 	}
 }
+

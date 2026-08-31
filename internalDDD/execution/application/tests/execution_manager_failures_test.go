@@ -8,6 +8,7 @@ import (
 
 	executionApplication "traiderBot/internalDDD/execution/application"
 	executionDomain "traiderBot/internalDDD/execution/domain"
+	marketDomain "traiderBot/internalDDD/market/domain"
 	simulationDomain "traiderBot/internalDDD/simulation/domain"
 )
 
@@ -148,6 +149,76 @@ func TestExecutionManagerAbortsWhenOrderIsNotFilled(t *testing.T) {
 		t.Fatalf(
 			"expected second order cancelled, got %s",
 			execution.Orders[1].Status,
+		)
+	}
+}
+
+func TestExecutionManagerFailsWhenExecutionAndReconciliationFail(t *testing.T) {
+	opportunity := simulationDomain.Opportunity{
+		StartAsset: "USDT",
+
+		RequestedStartAmount: decimal.NewFromInt(100),
+		ExecutedStartAmount:  decimal.NewFromInt(100),
+
+		Steps: []simulationDomain.StepResult{
+			{
+				AmountIn:  decimal.NewFromInt(100),
+				AmountOut: decimal.NewFromInt(101),
+				Edge: marketDomain.GraphEdge{
+					From:      "USDT",
+					To:        "BTC",
+					Symbol:    "BTCUSDT",
+					Direction: marketDomain.Buy,
+				},
+			},
+		},
+	}
+
+	executor := &fakeExchangeExecutorError{
+		err: context.DeadlineExceeded,
+	}
+
+	query := &fakeExchangeOrderQuery{
+		err: context.DeadlineExceeded,
+	}
+
+	manager := executionApplication.NewExecutionManager(
+		executor,
+		query,
+		fakeExecutionPolicy{},
+	)
+
+	execution, err := manager.Execute(
+		context.Background(),
+		&opportunity,
+	)
+
+	if err == nil {
+		t.Fatal("expected execution error, got nil")
+	}
+
+	if execution == nil {
+		t.Fatal("expected execution, got nil")
+	}
+
+	if execution.Status != executionDomain.ExecutionFailed {
+		t.Fatalf(
+			"expected execution failed, got %s",
+			execution.Status,
+		)
+	}
+
+	if query.calls != 1 {
+		t.Fatalf(
+			"expected 1 reconciliation call, got %d",
+			query.calls,
+		)
+	}
+
+	if len(execution.Orders) != 0 {
+		t.Fatalf(
+			"expected 0 orders after failed reconciliation, got %d",
+			len(execution.Orders),
 		)
 	}
 }

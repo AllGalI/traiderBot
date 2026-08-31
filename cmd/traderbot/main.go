@@ -11,9 +11,13 @@ import (
 	debugApplication "traiderBot/internalDDD/debug/application"
 	debugDomain "traiderBot/internalDDD/debug/domain"
 	"traiderBot/internalDDD/debug/infrastructure/console"
+
+	executionApplication "traiderBot/internalDDD/execution/application"
+	executionPaper "traiderBot/internalDDD/execution/infrastructure/paper"
+
 	marketApplication "traiderBot/internalDDD/market/application"
 	"traiderBot/internalDDD/market/infrastructure"
-	"traiderBot/internalDDD/market/infrastructure/binance"
+	marketBinance "traiderBot/internalDDD/market/infrastructure/binance"
 	"traiderBot/internalDDD/market/infrastructure/cache"
 
 	simulationApplication "traiderBot/internalDDD/simulation/application"
@@ -23,11 +27,18 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-type logOpportunityHandler struct{}
+type executionOpportunityHandler struct {
+	manager *executionApplication.ExecutionManager
+}
 
-func (h *logOpportunityHandler) Handle(
+func (h *executionOpportunityHandler) Handle(
 	opportunity *simulationDomain.Opportunity,
 ) {
+	if opportunity == nil {
+		log.Println("execution: received nil opportunity")
+		return
+	}
+
 	log.Printf(
 		"OPPORTUNITY: route=%v profit=%s profitPct=%s fill=%s",
 		opportunity.Route.Symbols(),
@@ -35,6 +46,53 @@ func (h *logOpportunityHandler) Handle(
 		opportunity.ProfitPct,
 		opportunity.FillRatio,
 	)
+
+	execution, err := h.manager.Execute(
+		context.Background(),
+		opportunity,
+	)
+
+	if err != nil {
+		log.Printf(
+			"EXECUTION ERROR: %v",
+			err,
+		)
+
+		if execution != nil {
+			log.Printf(
+				"EXECUTION: id=%s status=%s orders=%d currentAmount=%s",
+				execution.ID,
+				execution.Status,
+				len(execution.Orders),
+				execution.CurrentAmount,
+			)
+		}
+
+		return
+	}
+
+	log.Printf(
+		"EXECUTION: id=%s status=%s orders=%d finalAmount=%s",
+		execution.ID,
+		execution.Status,
+		len(execution.Orders),
+		execution.FinalAmount,
+	)
+
+	for _, order := range execution.Orders {
+		log.Printf(
+			"EXECUTION ORDER: execution=%s step=%d symbol=%s direction=%v status=%s requested=%s executed=%s received=%s clientOrderID=%s",
+			execution.ID,
+			order.StepIndex,
+			order.Symbol,
+			order.Direction,
+			order.Status,
+			order.RequestedAmount,
+			order.ExecutedAmount,
+			order.ReceivedAmount,
+			order.ClientOrderID,
+		)
+	}
 }
 
 func main() {
@@ -60,7 +118,7 @@ func main() {
 	// Market structure.
 	// -------------------------------------------------------------------------
 
-	symbolProvider := binance.NewSymbolProvider()
+	symbolProvider := marketBinance.NewSymbolProvider()
 
 	marketStructureService := marketApplication.NewMarketStructureService(
 		symbolProvider,
@@ -72,9 +130,10 @@ func main() {
 	// Market data.
 	// -------------------------------------------------------------------------
 
-	orderBookProvider := binance.NewOrderBookProvider()
-	orderBookStream := binance.NewOrderBookStream()
+	orderBookProvider := marketBinance.NewOrderBookProvider()
+	orderBookStream := marketBinance.NewOrderBookStream()
 	orderBookStore := infrastructure.NewOrderBookStore()
+
 	orderBookDebugProvider := debugDomain.NewOrderBookProvider(
 		orderBookStore,
 	)
@@ -102,7 +161,10 @@ func main() {
 		"internalDDD/simulation/config/freshness.json",
 	)
 	if err != nil {
-		log.Fatalf("load freshness config: %v", err)
+		log.Fatalf(
+			"load freshness config: %v",
+			err,
+		)
 	}
 
 	freshnessPolicy := freshnessConfig.NewPolicy()
@@ -132,14 +194,24 @@ func main() {
 	)
 
 	// -------------------------------------------------------------------------
-	// Opportunity handling.
+	// Execution.
 	// -------------------------------------------------------------------------
 
-	// Пока используем простой handler.
-	//
-	// Позже сюда можно поставить нормальный pipeline:
-	// Opportunity -> validation -> execution / notification / storage.
-	opportunityHandler := &logOpportunityHandler{}
+	paperExecutor := executionPaper.NewExecutor()
+
+	executionPolicy := executionApplication.NewDefaultExecutionPolicy(
+		decimal.RequireFromString("0.90"),
+	)
+
+	executionManager := executionApplication.NewExecutionManager(
+		paperExecutor,
+		nil,
+		executionPolicy,
+	)
+
+	opportunityHandler := &executionOpportunityHandler{
+		manager: executionManager,
+	}
 
 	simulationWorker := simulationApplication.NewWorker(
 		marketStructureStore,
@@ -148,6 +220,7 @@ func main() {
 		opportunityHandler,
 		startAmount,
 	)
+
 	simulationDebugProvider := debugDomain.NewSimulationProvider(
 		simulationWorker.Metrics(),
 	)
@@ -201,7 +274,11 @@ func main() {
 				return
 			}
 
-			log.Printf("market service failed: %v", err)
+			log.Printf(
+				"market service failed: %v",
+				err,
+			)
+
 			stop()
 		}
 	}()
@@ -225,7 +302,11 @@ func main() {
 				return
 			}
 
-			log.Printf("fee refresh worker failed: %v", err)
+			log.Printf(
+				"fee refresh worker failed: %v",
+				err,
+			)
+
 			stop()
 		}
 	}()
@@ -241,7 +322,11 @@ func main() {
 				return
 			}
 
-			log.Printf("simulation worker failed: %v", err)
+			log.Printf(
+				"simulation worker failed: %v",
+				err,
+			)
+
 			stop()
 		}
 	}()
@@ -252,7 +337,11 @@ func main() {
 
 	go func() {
 		if err := commandHandler.Run(ctx); err != nil {
-			log.Printf("console stopped: %v", err)
+			log.Printf(
+				"console stopped: %v",
+				err,
+			)
+
 			stop()
 		}
 	}()
