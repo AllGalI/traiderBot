@@ -4,232 +4,291 @@ import (
 	"context"
 	"fmt"
 	"sync/atomic"
+	"time"
 
 	executionDomain "traiderBot/internalDDD/execution/domain"
 	simulationDomain "traiderBot/internalDDD/simulation/domain"
+
+	"github.com/shopspring/decimal"
 )
 
 type ExecutionManager struct {
-	executor   ExchangeExecutor
-	orderQuery ExchangeOrderQuery
-	policy     executionDomain.ExecutionPolicy
+	exchangeAdapter executionDomain.ExchangeAdapter
+	resultMapper    executionDomain.ActualStepResultMapper
+	evaluator       Evaluator
 
-	counter uint64
+	orderCounter uint64
 }
 
 func NewExecutionManager(
-	executor ExchangeExecutor,
-	orderQuery ExchangeOrderQuery,
-	policy executionDomain.ExecutionPolicy,
+	exchangeAdapter executionDomain.ExchangeAdapter,
+	resultMapper executionDomain.ActualStepResultMapper,
+	evaluator Evaluator,
 ) *ExecutionManager {
 	return &ExecutionManager{
-		executor:   executor,
-		orderQuery: orderQuery,
-		policy:     policy,
+		exchangeAdapter: exchangeAdapter,
+		resultMapper:    resultMapper,
+		evaluator:       evaluator,
 	}
 }
 
 func (m *ExecutionManager) Execute(
 	ctx context.Context,
-	opportunity *simulationDomain.Opportunity,
+	opportunity simulationDomain.Opportunity,
 ) (*executionDomain.Execution, error) {
-	if opportunity == nil {
-		return nil, fmt.Errorf("opportunity must not be nil")
+	if m.exchangeAdapter == nil {
+		return nil, fmt.Errorf("exchange adapter is not configured")
 	}
 
-	if len(opportunity.Steps) == 0 {
-		return nil, fmt.Errorf("opportunity has no steps")
+	if len(opportunity.Route.Edges) == 0 {
+		return nil, fmt.Errorf("opportunity route has no edges")
 	}
 
-	if m.executor == nil {
-		return nil, fmt.Errorf("executor is not configured")
-	}
+	execution := executionDomain.NewExecution(opportunity)
 
-	if m.policy == nil {
-		return nil, fmt.Errorf("execution policy is not configured")
-	}
-
-	execution := executionDomain.NewExecution(
-		m.nextID(),
-		*opportunity,
-	)
-
-	if err := execution.Start(); err != nil {
+	if err := execution.StartPreparing(); err != nil {
 		return execution, err
 	}
 
-	for stepIndex, step := range opportunity.Steps {
+	steps := m.buildExecutionSteps(opportunity)
+
+	currentAmount := opportunity.RequestedStartAmount
+
+	for _, step := range steps {
 		if err := ctx.Err(); err != nil {
-			_ = execution.Abort()
 			return execution, err
 		}
 
-		decision := m.policy.Decide(execution)
-
-		if decision.Type == executionDomain.DecisionAbort {
-			_ = execution.Abort()
-
-			return execution, fmt.Errorf(
-				"execution aborted: %s",
-				decision.Reason,
-			)
+		if err := execution.StartExecutingStep(); err != nil {
+			return execution, err
 		}
 
-		amountIn := execution.CurrentAmount
-
-		if stepIndex == 0 {
-			amountIn = step.AmountIn
-		}
-
-		clientOrderID := m.nextOrderID(
-			execution.ID,
-			stepIndex,
+		request, err := m.buildOrderRequest(
+			step,
+			currentAmount,
 		)
-
-		request := executionDomain.OrderRequest{
-			StepIndex: stepIndex,
-
-			Edge:              step.Edge,
-			Amount:            amountIn,
-			ExpectedAmountOut: step.AmountOut,
-
-			ClientOrderID: clientOrderID,
+		if err != nil {
+			return execution, err
 		}
 
-		result, err := m.executor.Execute(
+		result, err := m.exchangeAdapter.Execute(
 			ctx,
 			request,
 		)
-
 		if err != nil {
-			executorErr := err
-
-			reconciledResult, reconcileErr := m.reconcileOrder(
-				ctx,
-				request,
+			return execution, fmt.Errorf(
+				"execute step %d: %w",
+				step.ID,
+				err,
 			)
+		}
 
-			if reconcileErr != nil {
-				_ = execution.Fail()
+		if err := m.validateOrderResult(result); err != nil {
+			return execution, fmt.Errorf(
+				"step %d returned invalid order result: %w",
+				step.ID,
+				err,
+			)
+		}
 
+		switch result.Status {
+		case executionDomain.OrderStatusFilled:
+			// Order is completely filled.
+			// Continue with actual result evaluation.
+
+		case executionDomain.OrderStatusPending,
+			executionDomain.OrderStatusUnknown:
+
+			if err := execution.RequireReconciliation(); err != nil {
 				return execution, fmt.Errorf(
-					"execute step %d failed: %w; reconciliation failed: %v",
-					stepIndex,
-					executorErr,
-					reconcileErr,
+					"require reconciliation for step %d: %w",
+					step.ID,
+					err,
 				)
 			}
 
-			result = reconciledResult
+			reconciledResult, err := m.exchangeAdapter.GetOrderByClientID(
+				ctx,
+				request,
+			)
+			if err != nil {
+				return execution, fmt.Errorf(
+					"reconcile step %d order %q: %w",
+					step.ID,
+					request.ClientOrderID,
+					err,
+				)
+			}
+
+			if err := m.validateOrderResult(reconciledResult); err != nil {
+				return execution, fmt.Errorf(
+					"reconciled step %d returned invalid order result: %w",
+					step.ID,
+					err,
+				)
+			}
+
+			// Primary execution does not resume after reconciliation.
+			// Recovery will work with the actual state.
+			return execution, fmt.Errorf(
+				"step %d requires recovery after reconciliation: status %s",
+				step.ID,
+				reconciledResult.Status,
+			)
+
+		case executionDomain.OrderStatusPartiallyFilled,
+			executionDomain.OrderStatusRejected,
+			executionDomain.OrderStatusCancelled:
+
+			if err := execution.StartEvaluating(); err != nil {
+				return execution, fmt.Errorf(
+					"start evaluation for recovery on step %d: %w",
+					step.ID,
+					err,
+				)
+			}
+
+			if err := execution.ApplyDecision(
+				executionDomain.DecisionRecoveryRequired,
+			); err != nil {
+				return execution, fmt.Errorf(
+					"apply recovery decision for step %d: %w",
+					step.ID,
+					err,
+				)
+			}
+
+			// Recovery is not connected yet.
+			return execution, fmt.Errorf(
+				"step %d requires recovery: order status %s",
+				step.ID,
+				result.Status,
+			)
+
+		default:
+			return execution, fmt.Errorf(
+				"step %d returned unsupported order status: %s",
+				step.ID,
+				result.Status,
+			)
 		}
-		if err := m.handleOrderResult(
-			execution,
+
+		completedAt := time.Now()
+
+		actualResult, err := m.resultMapper.Map(
+			step,
 			result,
-		); err != nil {
+			completedAt,
+		)
+		if err != nil {
+			return execution, fmt.Errorf(
+				"map actual result for step %d: %w",
+				step.ID,
+				err,
+			)
+		}
+
+		execution.AddActualStepResult(actualResult)
+
+		currentAmount = actualResult.Output.Quantity
+
+		if step.ID >= len(steps)-1 {
+			continue
+		}
+
+		if err := execution.StartEvaluating(); err != nil {
 			return execution, err
 		}
 
-		if execution.IsFinished() {
-			return execution, nil
-		}
-	}
+		decision := m.evaluator.Evaluate(
+			opportunity.Steps[step.ID],
+			actualResult,
+		)
 
-	if err := execution.Complete(
-		execution.CurrentAmount,
-	); err != nil {
-		return execution, err
+		if err := execution.ApplyDecision(decision); err != nil {
+			return execution, err
+		}
+
+		if decision == executionDomain.DecisionRecoveryRequired {
+			// Recovery is not connected yet.
+			return execution, fmt.Errorf(
+				"step %d requires recovery after evaluation",
+				step.ID,
+			)
+		}
 	}
 
 	return execution, nil
 }
 
-func (m *ExecutionManager) handleOrderResult(
-	execution *executionDomain.Execution,
-	result executionDomain.OrderExecutionResult,
-) error {
-	order := executionDomain.NewOrder(
-		result.StepIndex,
-		result,
+func (m *ExecutionManager) buildExecutionSteps(
+	opportunity simulationDomain.Opportunity,
+) []executionDomain.ExecutionStep {
+	steps := make(
+		[]executionDomain.ExecutionStep,
+		0,
+		len(opportunity.Route.Edges),
 	)
 
-	if err := execution.AddOrder(order); err != nil {
-		_ = execution.Fail()
-		return err
-	}
-
-	switch result.Status {
-	case executionDomain.OrderFilled:
-		if err := execution.AdvanceStep(
-			result.ReceivedAmount,
-		); err != nil {
-			_ = execution.Fail()
-			return err
-		}
-
-		return nil
-
-	case executionDomain.OrderPartiallyFilled:
-		_ = execution.Abort()
-
-		return nil
-
-	case executionDomain.OrderCancelled:
-		_ = execution.Abort()
-
-		return nil
-
-	case executionDomain.OrderFailed:
-		_ = execution.Abort()
-
-		return nil
-
-	default:
-		_ = execution.Abort()
-
-		return nil
-	}
-}
-
-func (m *ExecutionManager) reconcileOrder(
-	ctx context.Context,
-	request executionDomain.OrderRequest,
-) (executionDomain.OrderExecutionResult, error) {
-	if m.orderQuery == nil {
-		return executionDomain.OrderExecutionResult{}, fmt.Errorf(
-			"order query is not configured",
+	for index, edge := range opportunity.Route.Edges {
+		steps = append(
+			steps,
+			executionDomain.ExecutionStep{
+				ID:   index,
+				Edge: edge,
+			},
 		)
 	}
 
-	if err := ctx.Err(); err != nil {
-		return executionDomain.OrderExecutionResult{}, err
+	return steps
+}
+
+func (m *ExecutionManager) buildOrderRequest(
+	step executionDomain.ExecutionStep,
+	amount decimal.Decimal,
+) (executionDomain.OrderRequest, error) {
+	clientOrderID := m.nextOrderID(step.ID)
+
+	return executionDomain.NewOrderRequest(
+		step.Edge,
+		amount,
+		clientOrderID,
+	)
+}
+
+func (m *ExecutionManager) validateOrderResult(
+	result executionDomain.OrderResult,
+) error {
+	if result.ExecutedAmount.IsNegative() {
+		return fmt.Errorf(
+			"executed amount must not be negative",
+		)
 	}
 
-	return m.orderQuery.GetOrder(
-		ctx,
-		request.Edge.Symbol,
-		request.ClientOrderID,
-	)
+	if result.ReceivedAmount.IsNegative() {
+		return fmt.Errorf(
+			"received amount must not be negative",
+		)
+	}
+
+	if result.Fee.IsNegative() {
+		return fmt.Errorf(
+			"fee must not be negative",
+		)
+	}
+
+	return nil
 }
 
-func (m *ExecutionManager) nextID() string {
-	id := atomic.AddUint64(&m.counter, 1)
-
-	return fmt.Sprintf(
-		"execution-%d",
-		id,
+func (m *ExecutionManager) nextOrderID(stepID int) string {
+	id := atomic.AddUint64(
+		&m.orderCounter,
+		1,
 	)
-}
-
-func (m *ExecutionManager) nextOrderID(
-	executionID string,
-	stepIndex int,
-) string {
-	id := atomic.AddUint64(&m.counter, 1)
 
 	return fmt.Sprintf(
-		"%s-order-%d-%d",
-		executionID,
-		stepIndex,
+		"step-%d-order-%d",
+		stepID,
 		id,
 	)
 }

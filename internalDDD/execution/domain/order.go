@@ -1,98 +1,60 @@
 package domain
 
 import (
-	"time"
+	"fmt"
 
 	marketDomain "traiderBot/internalDDD/market/domain"
 
 	"github.com/shopspring/decimal"
 )
 
-type OrderStatus uint8
+type OrderStatus string
 
 const (
-	OrderPending OrderStatus = iota
-	OrderSubmitted
-	OrderPartiallyFilled
-	OrderFilled
-	OrderCancelled
-	OrderFailed
+	OrderStatusPending         OrderStatus = "Pending"
+	OrderStatusPartiallyFilled OrderStatus = "PartiallyFilled"
+	OrderStatusFilled          OrderStatus = "Filled"
+	OrderStatusRejected        OrderStatus = "Rejected"
+	OrderStatusCancelled       OrderStatus = "Cancelled"
+	OrderStatusUnknown         OrderStatus = "Unknown"
 )
 
-func (s OrderStatus) String() string {
-	switch s {
-	case OrderPending:
-		return "pending"
-
-	case OrderSubmitted:
-		return "submitted"
-
-	case OrderPartiallyFilled:
-		return "partially_filled"
-
-	case OrderFilled:
-		return "filled"
-
-	case OrderCancelled:
-		return "cancelled"
-
-	case OrderFailed:
-		return "failed"
-
-	default:
-		return "unknown"
-	}
+type OrderRequest struct {
+	Edge          marketDomain.GraphEdge
+	Amount        decimal.Decimal
+	ClientOrderID string
 }
 
-type Order struct {
-	StepIndex int
+func NewOrderRequest(
+	edge marketDomain.GraphEdge,
+	amount decimal.Decimal,
+	clientOrderID string,
+) (OrderRequest, error) {
+	if edge.Symbol == "" {
+		return OrderRequest{}, fmt.Errorf("symbol is required")
+	}
 
-	Symbol    string
-	Direction marketDomain.TradeDirection
+	if amount.IsZero() || amount.IsNegative() {
+		return OrderRequest{}, fmt.Errorf("amount must be greater than zero")
+	}
 
-	ClientOrderID   string
+	if clientOrderID == "" {
+		return OrderRequest{}, fmt.Errorf("client order ID is required")
+	}
+
+	return OrderRequest{
+		Edge:          edge,
+		Amount:        amount,
+		ClientOrderID: clientOrderID,
+	}, nil
+}
+
+type OrderResult struct {
+	Status          OrderStatus
 	ExchangeOrderID string
-
-	RequestedAmount   decimal.Decimal
-	ExpectedAmountOut decimal.Decimal
-	ExecutedAmount    decimal.Decimal
-	ReceivedAmount    decimal.Decimal
-
-	Fee      decimal.Decimal
-	FeeAsset string
-
-	Status OrderStatus
-
-	CreatedAt   time.Time
-	SubmittedAt time.Time
-	FilledAt    time.Time
-}
-
-func NewOrder(
-	stepIndex int,
-	result OrderExecutionResult,
-) Order {
-	return Order{
-		StepIndex: stepIndex,
-
-		Symbol:    result.Symbol,
-		Direction: result.Direction,
-
-		ClientOrderID:   result.ClientOrderID,
-		ExchangeOrderID: result.ExchangeOrderID,
-
-		RequestedAmount:   result.RequestedAmount,
-		ExpectedAmountOut: result.ExpectedAmountOut,
-		ExecutedAmount:    result.ExecutedAmount,
-		ReceivedAmount:    result.ReceivedAmount,
-
-		Fee: result.Fee,
-		FeeAsset: result.FeeAsset,
-
-		Status: result.Status,
-
-		CreatedAt:   result.CreatedAt,
-		SubmittedAt: result.SubmittedAt,
-		FilledAt:    result.FilledAt,
-	}
+	ClientOrderID   string
+	ExecutedAmount  decimal.Decimal
+	ReceivedAmount  decimal.Decimal
+	Fee             decimal.Decimal
+	FeeAsset        string
 }

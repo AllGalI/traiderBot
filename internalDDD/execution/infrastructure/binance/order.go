@@ -7,53 +7,30 @@ import (
 	"net/url"
 
 	executionDomain "traiderBot/internalDDD/execution/domain"
-	marketDomain "traiderBot/internalDDD/market/domain"
 )
 
 func (c *Client) Execute(
 	ctx context.Context,
 	request executionDomain.OrderRequest,
-) (executionDomain.OrderExecutionResult, error) {
-	if request.Edge.Symbol == "" {
-		return executionDomain.OrderExecutionResult{}, fmt.Errorf(
-			"symbol is empty",
-		)
-	}
-
-	if request.Amount.IsZero() || request.Amount.IsNegative() {
-		return executionDomain.OrderExecutionResult{}, fmt.Errorf(
-			"amount must be positive",
-		)
-	}
-
-	if request.ClientOrderID == "" {
-		return executionDomain.OrderExecutionResult{}, fmt.Errorf(
-			"client order id is empty",
-		)
-	}
-
-	side, err := binanceSide(request.Edge.Direction)
+) (executionDomain.OrderResult, error) {
+	mappedRequest, err := toCreateOrderRequest(request)
 	if err != nil {
-		return executionDomain.OrderExecutionResult{}, err
+		return executionDomain.OrderResult{}, err
 	}
 
 	params := url.Values{}
 
-	params.Set("symbol", request.Edge.Symbol)
-	params.Set("side", side)
-	params.Set("type", "MARKET")
-	params.Set("newClientOrderId", request.ClientOrderID)
+	params.Set("symbol", mappedRequest.Symbol)
+	params.Set("side", mappedRequest.Side)
+	params.Set("type", mappedRequest.Type)
+	params.Set("newClientOrderId", mappedRequest.NewClientOrderID)
 
-	if request.Edge.Direction == marketDomain.Buy {
-		params.Set(
-			"quoteOrderQty",
-			request.Amount.String(),
-		)
-	} else {
-		params.Set(
-			"quantity",
-			request.Amount.String(),
-		)
+	if mappedRequest.Quantity != "" {
+		params.Set("quantity", mappedRequest.Quantity)
+	}
+
+	if mappedRequest.QuoteOrderQty != "" {
+		params.Set("quoteOrderQty", mappedRequest.QuoteOrderQty)
 	}
 
 	body, err := c.signedRequest(
@@ -63,41 +40,37 @@ func (c *Client) Execute(
 		params,
 	)
 	if err != nil {
-		return executionDomain.OrderExecutionResult{}, err
+		return executionDomain.OrderResult{}, err
 	}
 
 	response, err := decodeJSON[orderResponse](body)
 	if err != nil {
-		return executionDomain.OrderExecutionResult{}, err
+		return executionDomain.OrderResult{}, err
 	}
 
-	return c.toExecutionResult(
-		request,
-		response,
-	)
+	return toOrderResult(request, response)
 }
 
-func (c *Client) GetOrder(
+func (c *Client) GetOrderByClientID(
 	ctx context.Context,
-	symbol string,
-	clientOrderID string,
-) (executionDomain.OrderExecutionResult, error) {
-	if symbol == "" {
-		return executionDomain.OrderExecutionResult{}, fmt.Errorf(
+	request executionDomain.OrderRequest,
+) (executionDomain.OrderResult, error) {
+	if request.Edge.Symbol == "" {
+		return executionDomain.OrderResult{}, fmt.Errorf(
 			"symbol is empty",
 		)
 	}
 
-	if clientOrderID == "" {
-		return executionDomain.OrderExecutionResult{}, fmt.Errorf(
+	if request.ClientOrderID == "" {
+		return executionDomain.OrderResult{}, fmt.Errorf(
 			"client order id is empty",
 		)
 	}
 
 	params := url.Values{}
 
-	params.Set("symbol", symbol)
-	params.Set("origClientOrderId", clientOrderID)
+	params.Set("symbol", request.Edge.Symbol)
+	params.Set("origClientOrderId", request.ClientOrderID)
 
 	body, err := c.signedRequest(
 		ctx,
@@ -106,23 +79,13 @@ func (c *Client) GetOrder(
 		params,
 	)
 	if err != nil {
-		return executionDomain.OrderExecutionResult{}, err
+		return executionDomain.OrderResult{}, err
 	}
 
 	response, err := decodeJSON[orderResponse](body)
 	if err != nil {
-		return executionDomain.OrderExecutionResult{}, err
+		return executionDomain.OrderResult{}, err
 	}
 
-	request := executionDomain.OrderRequest{
-		Edge: marketDomain.GraphEdge{
-			Symbol: symbol,
-		},
-		ClientOrderID: clientOrderID,
-	}
-
-	return c.toExecutionResult(
-		request,
-		response,
-	)
+	return toOrderResult(request, response)
 }

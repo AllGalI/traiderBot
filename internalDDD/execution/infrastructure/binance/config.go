@@ -1,8 +1,12 @@
 package binance
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
+	"time"
 
 	"github.com/joho/godotenv"
 )
@@ -42,3 +46,28 @@ func LoadConfig(useTestnet bool) (Config, error) {
 
 	return config, nil
 }
+
+func NewHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout: 10 * time.Second,
+	}
+}
+
+func decodeJSON[T any](
+	body []byte,
+) (T, error) {
+	var result T
+
+	if err := json.Unmarshal(body, &result); err != nil {
+		return result, fmt.Errorf(
+			"decode binance response: %w",
+			err,
+		)
+	}
+
+	return result, nil
+}
+
+var ErrClientNotConfigured = errors.New(
+	"binance client is not configured",
+)

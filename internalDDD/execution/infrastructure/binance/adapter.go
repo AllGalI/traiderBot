@@ -3,7 +3,6 @@ package binance
 import (
 	"context"
 
-	executionApplication "traiderBot/internalDDD/execution/application"
 	executionDomain "traiderBot/internalDDD/execution/domain"
 )
 
@@ -11,23 +10,18 @@ type APIClient interface {
 	Execute(
 		ctx context.Context,
 		request executionDomain.OrderRequest,
-	) (executionDomain.OrderExecutionResult, error)
+	) (executionDomain.OrderResult, error)
 
-	GetOrder(
+	GetOrderByClientID(
 		ctx context.Context,
-		symbol string,
-		orderID string,
-	) (executionDomain.OrderExecutionResult, error)
+		request executionDomain.OrderRequest,
+	) (executionDomain.OrderResult, error)
 }
 
 type Adapter struct {
 	client APIClient
 }
 
-var (
-	_ executionApplication.ExchangeExecutor   = (*Adapter)(nil)
-	_ executionApplication.ExchangeOrderQuery = (*Adapter)(nil)
-)
 
 func NewAdapter(client APIClient) (*Adapter, error) {
 	if client == nil {
@@ -42,21 +36,19 @@ func NewAdapter(client APIClient) (*Adapter, error) {
 func (a *Adapter) Execute(
 	ctx context.Context,
 	request executionDomain.OrderRequest,
-) (executionDomain.OrderExecutionResult, error) {
+) (executionDomain.OrderResult, error) {
 	return a.client.Execute(
 		ctx,
 		request,
 	)
 }
 
-func (a *Adapter) GetOrder(
+func (a *Adapter) GetOrderByClientID(
 	ctx context.Context,
-	symbol string,
-	orderID string,
-) (executionDomain.OrderExecutionResult, error) {
-	return a.client.GetOrder(
+	request executionDomain.OrderRequest,
+) (executionDomain.OrderResult, error) {
+	return a.client.GetOrderByClientID(
 		ctx,
-		symbol,
-		orderID,
+		request,
 	)
 }

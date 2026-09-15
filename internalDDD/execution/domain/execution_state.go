@@ -1,33 +1,22 @@
 package domain
 
-type ExecutionStatus uint8
+type ExecutionState string
 
 const (
-	ExecutionCreated ExecutionStatus = iota
-	ExecutionExecuting
-	ExecutionCompleted
-	ExecutionAborted
-	ExecutionFailed
+	StateNotStarted             ExecutionState = "NotStarted"
+	StatePreparing              ExecutionState = "Preparing"
+	StateExecutingStep          ExecutionState = "ExecutingStep"
+	StateEvaluating             ExecutionState = "Evaluating"
+	StateRecovering             ExecutionState = "Recovering"
+	StateReconciliationRequired ExecutionState = "ReconciliationRequired"
+	StateFinalizing             ExecutionState = "Finalizing"
 )
 
-func (s ExecutionStatus) String() string {
-	switch s {
-	case ExecutionCreated:
-		return "created"
+type ExecutionDecision string
 
-	case ExecutionExecuting:
-		return "executing"
-
-	case ExecutionCompleted:
-		return "completed"
-
-	case ExecutionAborted:
-		return "aborted"
-
-	case ExecutionFailed:
-		return "failed"
-
-	default:
-		return "unknown"
-	}
-}
+const (
+	DecisionContinue         ExecutionDecision = "Continue"
+	DecisionComplete         ExecutionDecision = "Complete"
+	DecisionStop             ExecutionDecision = "Stop"
+	DecisionRecoveryRequired ExecutionDecision = "RecoveryRequired"
+)
