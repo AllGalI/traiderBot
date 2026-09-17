@@ -3,64 +3,78 @@ package application
 import (
 	"context"
 	"fmt"
-	"sync/atomic"
 	"time"
 
+	exchangeDomain "traiderBot/internalDDD/exchange/domain"
 	executionDomain "traiderBot/internalDDD/execution/domain"
+	recoveryApplication "traiderBot/internalDDD/recovery/application"
+	recoveryDomain "traiderBot/internalDDD/recovery/domain"
 	simulationDomain "traiderBot/internalDDD/simulation/domain"
 
 	"github.com/shopspring/decimal"
 )
 
 type ExecutionManager struct {
-	exchangeAdapter executionDomain.ExchangeAdapter
-	resultMapper    executionDomain.ActualStepResultMapper
-	evaluator       Evaluator
-
-	orderCounter uint64
+	exchangeAdapter  executionDomain.ExchangeAdapter
+	resultMapper     executionDomain.ActualStepResultMapper
+	evaluator        Evaluator
+	orderIDGenerator *exchangeDomain.OrderIDGenerator
+	recoveryService  recoveryApplication.RecoveryService
 }
 
 func NewExecutionManager(
 	exchangeAdapter executionDomain.ExchangeAdapter,
 	resultMapper executionDomain.ActualStepResultMapper,
 	evaluator Evaluator,
+	orderIDGenerator *exchangeDomain.OrderIDGenerator,
+	recoveryService recoveryApplication.RecoveryService,
 ) *ExecutionManager {
 	return &ExecutionManager{
-		exchangeAdapter: exchangeAdapter,
-		resultMapper:    resultMapper,
-		evaluator:       evaluator,
+		exchangeAdapter:  exchangeAdapter,
+		resultMapper:     resultMapper,
+		evaluator:        evaluator,
+		orderIDGenerator: orderIDGenerator,
+		recoveryService:  recoveryService,
 	}
 }
 
 func (m *ExecutionManager) Execute(
 	ctx context.Context,
 	opportunity simulationDomain.Opportunity,
-) (*executionDomain.Execution, error) {
+	marketContext recoveryApplication.MarketContext,
+) (*executionDomain.Execution, recoveryDomain.State, error) {
 	if m.exchangeAdapter == nil {
-		return nil, fmt.Errorf("exchange adapter is not configured")
+		return nil, nil, fmt.Errorf("exchange adapter is not configured")
+	}
+
+	if m.orderIDGenerator == nil {
+		return nil, nil, fmt.Errorf("order ID generator is not configured")
 	}
 
 	if len(opportunity.Route.Edges) == 0 {
-		return nil, fmt.Errorf("opportunity route has no edges")
+		return nil, nil, fmt.Errorf("opportunity route has no edges")
 	}
 
 	execution := executionDomain.NewExecution(opportunity)
 
 	if err := execution.StartPreparing(); err != nil {
-		return execution, err
+		return execution, nil, err
 	}
 
 	steps := m.buildExecutionSteps(opportunity)
+
+	initialState := m.buildInitialState(opportunity)
+	actualState := recoveryApplication.CloneState(initialState)
 
 	currentAmount := opportunity.RequestedStartAmount
 
 	for _, step := range steps {
 		if err := ctx.Err(); err != nil {
-			return execution, err
+			return execution, actualState, err
 		}
 
 		if err := execution.StartExecutingStep(); err != nil {
-			return execution, err
+			return execution, actualState, err
 		}
 
 		request, err := m.buildOrderRequest(
@@ -68,7 +82,7 @@ func (m *ExecutionManager) Execute(
 			currentAmount,
 		)
 		if err != nil {
-			return execution, err
+			return execution, actualState, err
 		}
 
 		result, err := m.exchangeAdapter.Execute(
@@ -76,7 +90,7 @@ func (m *ExecutionManager) Execute(
 			request,
 		)
 		if err != nil {
-			return execution, fmt.Errorf(
+			return execution, actualState, fmt.Errorf(
 				"execute step %d: %w",
 				step.ID,
 				err,
@@ -84,7 +98,7 @@ func (m *ExecutionManager) Execute(
 		}
 
 		if err := m.validateOrderResult(result); err != nil {
-			return execution, fmt.Errorf(
+			return execution, actualState, fmt.Errorf(
 				"step %d returned invalid order result: %w",
 				step.ID,
 				err,
@@ -93,14 +107,13 @@ func (m *ExecutionManager) Execute(
 
 		switch result.Status {
 		case executionDomain.OrderStatusFilled:
-			// Order is completely filled.
-			// Continue with actual result evaluation.
+			// Continue below and process the actual result.
 
 		case executionDomain.OrderStatusPending,
 			executionDomain.OrderStatusUnknown:
 
 			if err := execution.RequireReconciliation(); err != nil {
-				return execution, fmt.Errorf(
+				return execution, actualState, fmt.Errorf(
 					"require reconciliation for step %d: %w",
 					step.ID,
 					err,
@@ -112,7 +125,7 @@ func (m *ExecutionManager) Execute(
 				request,
 			)
 			if err != nil {
-				return execution, fmt.Errorf(
+				return execution, actualState, fmt.Errorf(
 					"reconcile step %d order %q: %w",
 					step.ID,
 					request.ClientOrderID,
@@ -121,52 +134,108 @@ func (m *ExecutionManager) Execute(
 			}
 
 			if err := m.validateOrderResult(reconciledResult); err != nil {
-				return execution, fmt.Errorf(
+				return execution, actualState, fmt.Errorf(
 					"reconciled step %d returned invalid order result: %w",
 					step.ID,
 					err,
 				)
 			}
 
-			// Primary execution does not resume after reconciliation.
-			// Recovery will work with the actual state.
-			return execution, fmt.Errorf(
-				"step %d requires recovery after reconciliation: status %s",
-				step.ID,
-				reconciledResult.Status,
+			switch reconciledResult.Status {
+			case executionDomain.OrderStatusFilled:
+				result = reconciledResult
+
+			case executionDomain.OrderStatusPartiallyFilled:
+				actualState = m.applyOrderResult(
+					actualState,
+					step,
+					reconciledResult,
+				)
+
+				return m.startRecovery(
+					ctx,
+					execution,
+					initialState,
+					actualState,
+					marketContext,
+					fmt.Errorf(
+						"step %d requires recovery after reconciliation: status %s",
+						step.ID,
+						reconciledResult.Status,
+					),
+				)
+
+			case executionDomain.OrderStatusRejected,
+				executionDomain.OrderStatusCancelled:
+
+				return m.startRecovery(
+					ctx,
+					execution,
+					initialState,
+					actualState,
+					marketContext,
+					fmt.Errorf(
+						"step %d requires recovery after reconciliation: status %s",
+						step.ID,
+						reconciledResult.Status,
+					),
+				)
+
+			case executionDomain.OrderStatusPending,
+				executionDomain.OrderStatusUnknown:
+
+				return execution, actualState, fmt.Errorf(
+					"step %d remains unresolved after reconciliation: status %s",
+					step.ID,
+					reconciledResult.Status,
+				)
+
+			default:
+				return execution, actualState, fmt.Errorf(
+					"step %d returned unsupported reconciled order status: %s",
+					step.ID,
+					reconciledResult.Status,
+				)
+			}
+
+		case executionDomain.OrderStatusPartiallyFilled:
+			actualState = m.applyOrderResult(
+				actualState,
+				step,
+				result,
 			)
 
-		case executionDomain.OrderStatusPartiallyFilled,
-			executionDomain.OrderStatusRejected,
+			return m.startRecovery(
+				ctx,
+				execution,
+				initialState,
+				actualState,
+				marketContext,
+				fmt.Errorf(
+					"step %d requires recovery: order status %s",
+					step.ID,
+					result.Status,
+				),
+			)
+
+		case executionDomain.OrderStatusRejected,
 			executionDomain.OrderStatusCancelled:
 
-			if err := execution.StartEvaluating(); err != nil {
-				return execution, fmt.Errorf(
-					"start evaluation for recovery on step %d: %w",
+			return m.startRecovery(
+				ctx,
+				execution,
+				initialState,
+				actualState,
+				marketContext,
+				fmt.Errorf(
+					"step %d requires recovery: order status %s",
 					step.ID,
-					err,
-				)
-			}
-
-			if err := execution.ApplyDecision(
-				executionDomain.DecisionRecoveryRequired,
-			); err != nil {
-				return execution, fmt.Errorf(
-					"apply recovery decision for step %d: %w",
-					step.ID,
-					err,
-				)
-			}
-
-			// Recovery is not connected yet.
-			return execution, fmt.Errorf(
-				"step %d requires recovery: order status %s",
-				step.ID,
-				result.Status,
+					result.Status,
+				),
 			)
 
 		default:
-			return execution, fmt.Errorf(
+			return execution, actualState, fmt.Errorf(
 				"step %d returned unsupported order status: %s",
 				step.ID,
 				result.Status,
@@ -181,7 +250,7 @@ func (m *ExecutionManager) Execute(
 			completedAt,
 		)
 		if err != nil {
-			return execution, fmt.Errorf(
+			return execution, actualState, fmt.Errorf(
 				"map actual result for step %d: %w",
 				step.ID,
 				err,
@@ -190,6 +259,12 @@ func (m *ExecutionManager) Execute(
 
 		execution.AddActualStepResult(actualResult)
 
+		actualState = m.applyOrderResult(
+			actualState,
+			step,
+			result,
+		)
+
 		currentAmount = actualResult.Output.Quantity
 
 		if step.ID >= len(steps)-1 {
@@ -197,7 +272,7 @@ func (m *ExecutionManager) Execute(
 		}
 
 		if err := execution.StartEvaluating(); err != nil {
-			return execution, err
+			return execution, actualState, err
 		}
 
 		decision := m.evaluator.Evaluate(
@@ -206,19 +281,116 @@ func (m *ExecutionManager) Execute(
 		)
 
 		if err := execution.ApplyDecision(decision); err != nil {
-			return execution, err
+			return execution, actualState, err
 		}
 
 		if decision == executionDomain.DecisionRecoveryRequired {
-			// Recovery is not connected yet.
-			return execution, fmt.Errorf(
-				"step %d requires recovery after evaluation",
-				step.ID,
+			return m.runRecovery(
+				ctx,
+				execution,
+				initialState,
+				actualState,
+				marketContext,
+				fmt.Errorf(
+					"step %d requires recovery after evaluation",
+					step.ID,
+				),
 			)
 		}
 	}
 
-	return execution, nil
+	return execution, actualState, nil
+}
+
+func (m *ExecutionManager) startRecovery(
+	ctx context.Context,
+	execution *executionDomain.Execution,
+	initialState recoveryDomain.State,
+	actualState recoveryDomain.State,
+	marketContext recoveryApplication.MarketContext,
+	cause error,
+) (*executionDomain.Execution, recoveryDomain.State, error) {
+	if err := execution.StartEvaluating(); err != nil {
+		return execution, actualState, fmt.Errorf(
+			"start recovery evaluation: %w",
+			err,
+		)
+	}
+
+	if err := execution.ApplyDecision(
+		executionDomain.DecisionRecoveryRequired,
+	); err != nil {
+		return execution, actualState, fmt.Errorf(
+			"apply recovery decision: %w",
+			err,
+		)
+	}
+
+	return m.runRecovery(
+		ctx,
+		execution,
+		initialState,
+		actualState,
+		marketContext,
+		cause,
+	)
+}
+
+func (m *ExecutionManager) runRecovery(
+	ctx context.Context,
+	execution *executionDomain.Execution,
+	initialState recoveryDomain.State,
+	actualState recoveryDomain.State,
+	marketContext recoveryApplication.MarketContext,
+	cause error,
+) (*executionDomain.Execution, recoveryDomain.State, error) {
+	recoveredState, err := m.recoveryService.Recover(
+		ctx,
+		recoveryDomain.RecoveryInput{
+			InitialState: initialState,
+			ActualState:  actualState,
+		},
+		marketContext,
+	)
+	if err != nil {
+		return execution, recoveredState, fmt.Errorf(
+			"%w: recovery failed: %w",
+			cause,
+			err,
+		)
+	}
+
+	return execution, recoveredState, nil
+}
+
+func (m *ExecutionManager) buildInitialState(
+	opportunity simulationDomain.Opportunity,
+) recoveryDomain.State {
+	state := make(recoveryDomain.State)
+
+	startAsset := opportunity.Route.Edges[0].From
+
+	state[startAsset] = opportunity.RequestedStartAmount
+
+	return state
+}
+
+func (m *ExecutionManager) applyOrderResult(
+	state recoveryDomain.State,
+	step executionDomain.ExecutionStep,
+	result executionDomain.OrderResult,
+) recoveryDomain.State {
+	nextState := recoveryApplication.CloneState(state)
+
+	nextState[step.Edge.From] = nextState[step.Edge.From].Sub(
+		result.ExecutedAmount,
+	)
+
+	nextState[step.Edge.To] = nextState[step.Edge.To].Add(
+		result.ReceivedAmount,
+	)
+
+	return nextState
 }
 
 func (m *ExecutionManager) buildExecutionSteps(
@@ -247,7 +419,7 @@ func (m *ExecutionManager) buildOrderRequest(
 	step executionDomain.ExecutionStep,
 	amount decimal.Decimal,
 ) (executionDomain.OrderRequest, error) {
-	clientOrderID := m.nextOrderID(step.ID)
+	clientOrderID := m.orderIDGenerator.Next(step.ID)
 
 	return executionDomain.NewOrderRequest(
 		step.Edge,
@@ -278,17 +450,4 @@ func (m *ExecutionManager) validateOrderResult(
 	}
 
 	return nil
-}
-
-func (m *ExecutionManager) nextOrderID(stepID int) string {
-	id := atomic.AddUint64(
-		&m.orderCounter,
-		1,
-	)
-
-	return fmt.Sprintf(
-		"step-%d-order-%d",
-		stepID,
-		id,
-	)
 }

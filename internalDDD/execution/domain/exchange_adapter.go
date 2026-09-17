@@ -1,15 +1,7 @@
 package domain
 
-import "context"
+import (
+	exchangeDomain "traiderBot/internalDDD/exchange/domain"
+)
 
-type ExchangeAdapter interface {
-	Execute(
-		ctx context.Context,
-		request OrderRequest,
-	) (OrderResult, error)
-
-	GetOrderByClientID(
-		ctx context.Context,
-		request OrderRequest,
-	) (OrderResult, error)
-}
+type ExchangeAdapter = exchangeDomain.Adapter

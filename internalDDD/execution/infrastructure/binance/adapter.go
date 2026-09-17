@@ -3,19 +3,19 @@ package binance
 import (
 	"context"
 
-	executionDomain "traiderBot/internalDDD/execution/domain"
+	exchangeDomain "traiderBot/internalDDD/exchange/domain"
 )
 
 type APIClient interface {
 	Execute(
 		ctx context.Context,
-		request executionDomain.OrderRequest,
-	) (executionDomain.OrderResult, error)
+		request exchangeDomain.OrderRequest,
+	) (exchangeDomain.OrderResult, error)
 
 	GetOrderByClientID(
 		ctx context.Context,
-		request executionDomain.OrderRequest,
-	) (executionDomain.OrderResult, error)
+		request exchangeDomain.OrderRequest,
+	) (exchangeDomain.OrderResult, error)
 }
 
 type Adapter struct {
@@ -35,8 +35,8 @@ func NewAdapter(client APIClient) (*Adapter, error) {
 
 func (a *Adapter) Execute(
 	ctx context.Context,
-	request executionDomain.OrderRequest,
-) (executionDomain.OrderResult, error) {
+	request exchangeDomain.OrderRequest,
+) (exchangeDomain.OrderResult, error) {
 	return a.client.Execute(
 		ctx,
 		request,
@@ -45,8 +45,8 @@ func (a *Adapter) Execute(
 
 func (a *Adapter) GetOrderByClientID(
 	ctx context.Context,
-	request executionDomain.OrderRequest,
-) (executionDomain.OrderResult, error) {
+	request exchangeDomain.OrderRequest,
+) (exchangeDomain.OrderResult, error) {
 	return a.client.GetOrderByClientID(
 		ctx,
 		request,

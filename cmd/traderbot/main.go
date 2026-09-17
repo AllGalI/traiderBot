@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -12,13 +13,18 @@ import (
 	debugDomain "traiderBot/internalDDD/debug/domain"
 	"traiderBot/internalDDD/debug/infrastructure/console"
 
+	exchangeDomain "traiderBot/internalDDD/exchange/domain"
+
 	executionApplication "traiderBot/internalDDD/execution/application"
 	executionPaper "traiderBot/internalDDD/execution/infrastructure/paper"
 
 	marketApplication "traiderBot/internalDDD/market/application"
+	marketDomain "traiderBot/internalDDD/market/domain"
 	"traiderBot/internalDDD/market/infrastructure"
 	marketBinance "traiderBot/internalDDD/market/infrastructure/binance"
 	"traiderBot/internalDDD/market/infrastructure/cache"
+
+	recoveryApplication "traiderBot/internalDDD/recovery/application"
 
 	simulationApplication "traiderBot/internalDDD/simulation/application"
 	simulationDomain "traiderBot/internalDDD/simulation/domain"
@@ -28,7 +34,10 @@ import (
 )
 
 type executionOpportunityHandler struct {
-	manager *executionApplication.ExecutionManager
+	manager              *executionApplication.ExecutionManager
+	marketStructureStore marketApplication.MarketStructureStore
+	orderBookStore       *infrastructure.OrderBookStore
+	feeCache              *simulationApplication.FeeCache
 }
 
 func (h *executionOpportunityHandler) Handle(
@@ -47,9 +56,19 @@ func (h *executionOpportunityHandler) Handle(
 		opportunity.FillRatio,
 	)
 
-	execution, err := h.manager.Execute(
+	marketContext, err := h.buildMarketContext()
+	if err != nil {
+		log.Printf(
+			"EXECUTION ERROR: build market context: %v",
+			err,
+		)
+		return
+	}
+
+	execution, actualState, err := h.manager.Execute(
 		context.Background(),
-		opportunity,
+		*opportunity,
+		marketContext,
 	)
 
 	if err != nil {
@@ -60,39 +79,87 @@ func (h *executionOpportunityHandler) Handle(
 
 		if execution != nil {
 			log.Printf(
-				"EXECUTION: id=%s status=%s orders=%d currentAmount=%s",
-				execution.ID,
-				execution.Status,
-				len(execution.Orders),
-				execution.CurrentAmount,
+				"EXECUTION: state=%s actualStepResults=%d",
+				execution.State(),
+				len(execution.ActualStepResults()),
 			)
 		}
+
+		log.Printf(
+			"EXECUTION STATE: %+v",
+			actualState,
+		)
 
 		return
 	}
 
 	log.Printf(
-		"EXECUTION: id=%s status=%s orders=%d finalAmount=%s",
-		execution.ID,
-		execution.Status,
-		len(execution.Orders),
-		execution.FinalAmount,
+		"EXECUTION: state=%s actualStepResults=%d",
+		execution.State(),
+		len(execution.ActualStepResults()),
 	)
 
-	for _, order := range execution.Orders {
-		log.Printf(
-			"EXECUTION ORDER: execution=%s step=%d symbol=%s direction=%v status=%s requested=%s executed=%s received=%s clientOrderID=%s",
-			execution.ID,
-			order.StepIndex,
-			order.Symbol,
-			order.Direction,
-			order.Status,
-			order.RequestedAmount,
-			order.ExecutedAmount,
-			order.ReceivedAmount,
-			order.ClientOrderID,
-		)
+	log.Printf(
+		"EXECUTION STATE: %+v",
+		actualState,
+	)
+}
+func (h *executionOpportunityHandler) buildMarketContext() (
+	recoveryApplication.MarketContext,
+	error,
+) {
+	marketStructure, ok := h.marketStructureStore.Get()
+	if !ok || marketStructure == nil {
+		return recoveryApplication.MarketContext{},
+			fmt.Errorf("market structure is not available")
 	}
+
+	symbols := make(
+		map[string]marketDomain.Symbol,
+		len(marketStructure.Symbols),
+	)
+
+	for _, symbol := range marketStructure.Symbols {
+		symbols[symbol.Name] = symbol
+	}
+
+	orderBooks := make(
+		map[string]marketDomain.OrderBook,
+	)
+
+	for _, symbol := range h.orderBookStore.Symbols() {
+		orderBook, ok := h.orderBookStore.Get(symbol)
+		if !ok {
+			continue
+		}
+
+		orderBooks[symbol] = orderBook
+	}
+
+	fees := make(
+		map[string]marketDomain.FeeRate,
+	)
+
+	for symbol := range symbols {
+		fee, ok := h.feeCache.Get(
+			context.Background(),
+			symbol,
+		)
+		if !ok {
+			continue
+		}
+
+		fees[symbol] = marketDomain.FeeRate{
+			Maker: fee.Rate,
+			Taker: fee.Rate,
+		}
+	}
+
+	return recoveryApplication.MarketContext{
+		Symbols:    symbols,
+		OrderBooks: orderBooks,
+		Fees:       fees,
+	}, nil
 }
 
 func main() {
@@ -112,6 +179,7 @@ func main() {
 		minLiquidityFillRatio = decimal.RequireFromString("0.90")
 		minProfitPct          = decimal.RequireFromString("0.001")
 		startAmount           = decimal.RequireFromString("100")
+		maxDeviation          = decimal.RequireFromString("0.003")
 	)
 
 	// -------------------------------------------------------------------------
@@ -194,64 +262,7 @@ func main() {
 	)
 
 	// -------------------------------------------------------------------------
-	// Execution.
-	// -------------------------------------------------------------------------
-
-	paperExecutor := executionPaper.NewExecutor()
-
-	executionPolicy := executionApplication.NewDefaultExecutionPolicy(
-		decimal.RequireFromString("0.90"),
-	)
-
-	executionManager := executionApplication.NewExecutionManager(
-		paperExecutor,
-		nil,
-		executionPolicy,
-	)
-
-	opportunityHandler := &executionOpportunityHandler{
-		manager: executionManager,
-	}
-
-	simulationWorker := simulationApplication.NewWorker(
-		marketStructureStore,
-		marketDataService.Updates(),
-		simulationService,
-		opportunityHandler,
-		startAmount,
-	)
-
-	simulationDebugProvider := debugDomain.NewSimulationProvider(
-		simulationWorker.Metrics(),
-	)
-
-	// -------------------------------------------------------------------------
-	// Debug / console.
-	// -------------------------------------------------------------------------
-
-	debugService := debugApplication.NewDebugService()
-
-	graphProvider := debugDomain.NewGraphProvider(
-		marketStructureStore,
-	)
-
-	debugService.Register(graphProvider)
-	debugService.Register(orderBookDebugProvider)
-	debugService.Register(simulationDebugProvider)
-
-	consoleHandler := console.NewHandler(
-		debugService,
-		os.Stdout,
-	)
-
-	commandHandler := console.NewCommandHandler(
-		consoleHandler,
-		os.Stdin,
-		os.Stdout,
-	)
-
-	// -------------------------------------------------------------------------
-	// Start.
+	// Start market service.
 	// -------------------------------------------------------------------------
 
 	startAssets := map[string]struct{}{
@@ -290,6 +301,104 @@ func main() {
 	case <-ctx.Done():
 		return
 	}
+
+	// -------------------------------------------------------------------------
+	// Recovery.
+	// -------------------------------------------------------------------------
+
+	marketStructure, ok := marketStructureStore.Get()
+	if !ok || marketStructure == nil {
+		log.Fatal("market structure is not available after market service became ready")
+	}
+
+	orderIDGenerator := exchangeDomain.NewOrderIDGenerator()
+
+	paperExecutor := executionPaper.NewExecutor()
+
+	recoveryRouteFinder := recoveryApplication.NewRouteFinder(
+		marketStructure.Graph,
+	)
+
+	recoverySimulator := recoveryApplication.NewSimulator()
+
+	recoveryPlanner := recoveryApplication.NewPlanner(
+		recoveryRouteFinder,
+		recoverySimulator,
+	)
+
+	recoveryExecutor := recoveryApplication.NewExecutor(
+		paperExecutor,
+		orderIDGenerator,
+	)
+
+	recoveryService := recoveryApplication.NewRecoveryService(
+		recoveryPlanner,
+		recoveryExecutor,
+	)
+
+	// -------------------------------------------------------------------------
+	// Execution.
+	// -------------------------------------------------------------------------
+
+	evaluator := executionApplication.NewEvaluator(
+		maxDeviation,
+	)
+
+	executionManager := executionApplication.NewExecutionManager(
+		paperExecutor,
+		nil,
+		evaluator,
+		orderIDGenerator,
+		recoveryService,
+	)
+
+	opportunityHandler := &executionOpportunityHandler{
+		manager:              executionManager,
+		marketStructureStore: marketStructureStore,
+		orderBookStore:       orderBookStore,
+		feeCache:             feeCache,
+	}
+
+	// -------------------------------------------------------------------------
+	// Simulation worker.
+	// -------------------------------------------------------------------------
+
+	simulationWorker := simulationApplication.NewWorker(
+		marketStructureStore,
+		marketDataService.Updates(),
+		simulationService,
+		opportunityHandler,
+		startAmount,
+	)
+
+	simulationDebugProvider := debugDomain.NewSimulationProvider(
+		simulationWorker.Metrics(),
+	)
+
+	// -------------------------------------------------------------------------
+	// Debug / console.
+	// -------------------------------------------------------------------------
+
+	debugService := debugApplication.NewDebugService()
+
+	graphProvider := debugDomain.NewGraphProvider(
+		marketStructureStore,
+	)
+
+	debugService.Register(graphProvider)
+	debugService.Register(orderBookDebugProvider)
+	debugService.Register(simulationDebugProvider)
+
+	consoleHandler := console.NewHandler(
+		debugService,
+		os.Stdout,
+	)
+
+	commandHandler := console.NewCommandHandler(
+		consoleHandler,
+		os.Stdin,
+		os.Stdout,
+	)
 
 	// -------------------------------------------------------------------------
 	// Fee refresh worker.

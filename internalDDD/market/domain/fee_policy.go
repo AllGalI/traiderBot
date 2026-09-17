@@ -1,6 +1,12 @@
 package domain
 
+
+import "github.com/shopspring/decimal"
+
+
 type FeeRate struct {
-	Maker float64
-	Taker float64
+
+	Maker decimal.Decimal
+
+	Taker decimal.Decimal
 }
