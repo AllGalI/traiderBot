@@ -3,9 +3,8 @@ package paper
 import (
 	"context"
 	"fmt"
-	"time"
 
-	executionDomain "traiderBot/internalDDD/execution/domain"
+	exchangeDomain "traiderBot/internalDDD/exchange/domain"
 
 	"github.com/shopspring/decimal"
 )
@@ -18,47 +17,62 @@ func NewExecutor() *Executor {
 
 func (e *Executor) Execute(
 	ctx context.Context,
-	request executionDomain.OrderRequest,
-) (executionDomain.OrderExecutionResult, error) {
+	request exchangeDomain.OrderRequest,
+) (exchangeDomain.OrderResult, error) {
 	if err := ctx.Err(); err != nil {
-		return executionDomain.OrderExecutionResult{}, err
+		return exchangeDomain.OrderResult{}, err
 	}
 
 	if request.Edge.Symbol == "" {
-		return executionDomain.OrderExecutionResult{}, fmt.Errorf(
+		return exchangeDomain.OrderResult{}, fmt.Errorf(
 			"symbol must not be empty",
 		)
 	}
 
 	if request.Amount.LessThanOrEqual(decimal.Zero) {
-		return executionDomain.OrderExecutionResult{}, fmt.Errorf(
+		return exchangeDomain.OrderResult{}, fmt.Errorf(
 			"amount must be greater than zero",
 		)
 	}
 
-	if request.ExpectedAmountOut.LessThanOrEqual(decimal.Zero) {
-		return executionDomain.OrderExecutionResult{}, fmt.Errorf(
-			"expected amount out must be greater than zero",
-		)
-	}
-
 	if request.ClientOrderID == "" {
-		return executionDomain.OrderExecutionResult{}, fmt.Errorf(
+		return exchangeDomain.OrderResult{}, fmt.Errorf(
 			"client order ID must not be empty",
 		)
 	}
 
-	now := time.Now()
+	return exchangeDomain.OrderResult{
+		Status:          exchangeDomain.OrderStatusFilled,
+		ExchangeOrderID: request.ClientOrderID,
+		ClientOrderID:   request.ClientOrderID,
+		ExecutedAmount:  request.Amount,
+		ReceivedAmount:  request.Amount,
+		Fee:             decimal.Zero,
+		FeeAsset:        "",
+	}, nil
+}
 
-	return executionDomain.NewOrderExecutionResult(
-		request,
-		request.Amount,
-		request.ExpectedAmountOut,
-		executionDomain.OrderFilled,
-		request.ClientOrderID,
-		request.ClientOrderID,
-		now,
-		now,
-		now,
-	), nil
+func (e *Executor) GetOrderByClientID(
+	ctx context.Context,
+	request exchangeDomain.OrderRequest,
+) (exchangeDomain.OrderResult, error) {
+	if err := ctx.Err(); err != nil {
+		return exchangeDomain.OrderResult{}, err
+	}
+
+	if request.ClientOrderID == "" {
+		return exchangeDomain.OrderResult{}, fmt.Errorf(
+			"client order ID must not be empty",
+		)
+	}
+
+	return exchangeDomain.OrderResult{
+		Status:          exchangeDomain.OrderStatusFilled,
+		ExchangeOrderID: request.ClientOrderID,
+		ClientOrderID:   request.ClientOrderID,
+		ExecutedAmount:  request.Amount,
+		ReceivedAmount: request.Amount,
+		Fee:             decimal.Zero,
+		FeeAsset:        "",
+	}, nil
 }

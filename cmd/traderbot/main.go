@@ -16,6 +16,7 @@ import (
 	exchangeDomain "traiderBot/internalDDD/exchange/domain"
 
 	executionApplication "traiderBot/internalDDD/execution/application"
+	executionDomain "traiderBot/internalDDD/execution/domain"
 	executionPaper "traiderBot/internalDDD/execution/infrastructure/paper"
 
 	marketApplication "traiderBot/internalDDD/market/application"
@@ -37,7 +38,7 @@ type executionOpportunityHandler struct {
 	manager              *executionApplication.ExecutionManager
 	marketStructureStore marketApplication.MarketStructureStore
 	orderBookStore       *infrastructure.OrderBookStore
-	feeCache              *simulationApplication.FeeCache
+	feeCache             *simulationApplication.FeeCache
 }
 
 func (h *executionOpportunityHandler) Handle(
@@ -344,9 +345,11 @@ func main() {
 		maxDeviation,
 	)
 
+	resultMapper := executionDomain.NewActualStepResultMapper()
+
 	executionManager := executionApplication.NewExecutionManager(
 		paperExecutor,
-		nil,
+		resultMapper,
 		evaluator,
 		orderIDGenerator,
 		recoveryService,

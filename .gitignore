@@ -10,3 +10,6 @@ arb-bot
 exchange_data.json 
 
 .ai-context/
+current_context.md
+docs2/
+docs/
