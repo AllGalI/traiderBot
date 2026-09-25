@@ -16,13 +16,23 @@ type WorkerMetrics struct {
 	routesSimulated uint64
 	opportunities   uint64
 
+	simulationOK                    uint64
+	simulationInvalidRoute          uint64
+	simulationInvalidStartAmount    uint64
+	simulationOrderBookNotFound     uint64
+	simulationOrderBookStale        uint64
+	simulationFiltersNotFound       uint64
+	simulationFeeNotFound            uint64
+	simulationInsufficientLiquidity uint64
+	simulationProfitTooLow           uint64
+
 	lastUpdateAt     time.Time
 	lastSimulationAt time.Time
 
 	totalSimulationTime time.Duration
 
-	minProfitPct decimal.Decimal
-	maxProfitPct decimal.Decimal
+	minProfitPct   decimal.Decimal
+	maxProfitPct   decimal.Decimal
 	hasProfitRange bool
 }
 
@@ -47,6 +57,42 @@ func (m *WorkerMetrics) RecordSimulation(
 	m.routesSimulated++
 	m.lastSimulationAt = time.Now()
 	m.totalSimulationTime += duration
+}
+
+func (m *WorkerMetrics) RecordSimulationResult(
+	reason simulationDomain.SimulationReason,
+) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	switch reason {
+	case simulationDomain.SimulationOK:
+		m.simulationOK++
+
+	case simulationDomain.SimulationInvalidRoute:
+		m.simulationInvalidRoute++
+
+	case simulationDomain.SimulationInvalidStartAmount:
+		m.simulationInvalidStartAmount++
+
+	case simulationDomain.SimulationOrderBookNotFound:
+		m.simulationOrderBookNotFound++
+
+	case simulationDomain.SimulationOrderBookStale:
+		m.simulationOrderBookStale++
+
+	case simulationDomain.SimulationFiltersNotFound:
+		m.simulationFiltersNotFound++
+
+	case simulationDomain.SimulationFeeNotFound:
+		m.simulationFeeNotFound++
+
+	case simulationDomain.SimulationInsufficientLiquidity:
+		m.simulationInsufficientLiquidity++
+
+	case simulationDomain.SimulationProfitTooLow:
+		m.simulationProfitTooLow++
+	}
 }
 
 func (m *WorkerMetrics) RecordOpportunity(
@@ -88,8 +134,18 @@ type WorkerMetricsSnapshot struct {
 	LastUpdateAt        time.Time
 	LastSimulationAt    time.Time
 
-	MinProfitPct decimal.Decimal
-	MaxProfitPct decimal.Decimal
+	SimulationOK                    uint64
+	SimulationInvalidRoute          uint64
+	SimulationInvalidStartAmount    uint64
+	SimulationOrderBookNotFound     uint64
+	SimulationOrderBookStale        uint64
+	SimulationFiltersNotFound       uint64
+	SimulationFeeNotFound            uint64
+	SimulationInsufficientLiquidity uint64
+	SimulationProfitTooLow           uint64
+
+	MinProfitPct   decimal.Decimal
+	MaxProfitPct   decimal.Decimal
 	HasProfitRange bool
 }
 
@@ -104,6 +160,16 @@ func (m *WorkerMetrics) Snapshot() WorkerMetricsSnapshot {
 		TotalSimulationTime: m.totalSimulationTime,
 		LastUpdateAt:        m.lastUpdateAt,
 		LastSimulationAt:    m.lastSimulationAt,
+
+		SimulationOK:                    m.simulationOK,
+		SimulationInvalidRoute:          m.simulationInvalidRoute,
+		SimulationInvalidStartAmount:    m.simulationInvalidStartAmount,
+		SimulationOrderBookNotFound:     m.simulationOrderBookNotFound,
+		SimulationOrderBookStale:        m.simulationOrderBookStale,
+		SimulationFiltersNotFound:       m.simulationFiltersNotFound,
+		SimulationFeeNotFound:            m.simulationFeeNotFound,
+		SimulationInsufficientLiquidity: m.simulationInsufficientLiquidity,
+		SimulationProfitTooLow:           m.simulationProfitTooLow,
 
 		MinProfitPct:   m.minProfitPct,
 		MaxProfitPct:   m.maxProfitPct,

@@ -8,7 +8,11 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+type OpportunityID string
+
 type Opportunity struct {
+	ID OpportunityID
+
 	Route marketDomain.Route
 	Steps []StepResult
 

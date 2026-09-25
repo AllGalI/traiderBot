@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"fmt"
+	"time"
 
 	recoveryDomain "traiderBot/internalDDD/recovery/domain"
 )
@@ -12,15 +13,18 @@ const maxRecoveryAttempts = 3
 type RecoveryService struct {
 	planner  Planner
 	executor RecoveryExecutor
+	store    RecoveryStore
 }
 
 func NewRecoveryService(
 	planner Planner,
 	executor RecoveryExecutor,
+	store RecoveryStore,
 ) RecoveryService {
 	return RecoveryService{
 		planner:  planner,
 		executor: executor,
+		store:    store,
 	}
 }
 
@@ -29,14 +33,42 @@ func (s RecoveryService) Recover(
 	input recoveryDomain.RecoveryInput,
 	marketContext MarketContext,
 ) (recoveryDomain.State, error) {
+
 	actualState := CloneState(input.ActualState)
 
+	snapshot := recoveryDomain.RecoverySnapshot{
+		ID:          recoveryDomain.NewRecoveryID(),
+		ExecutionID: input.ExecutionID,
+
+		ProcessState: recoveryDomain.RecoveryStarted,
+
+		InitialState: actualState,
+		ActualState:  actualState,
+
+		StartedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+
+	if s.store != nil {
+		_ = s.store.Create(&snapshot)
+	}
+
 	for attempt := 0; attempt < maxRecoveryAttempts; attempt++ {
+
+		snapshot.ProcessState = recoveryDomain.RecoveryPlanning
+		snapshot.Attempts = attempt + 1
+		snapshot.UpdatedAt = time.Now()
+
+		if s.store != nil {
+			_ = s.store.Update(&snapshot)
+		}
+
 		if err := ctx.Err(); err != nil {
 			return actualState, err
 		}
 
 		currentInput := recoveryDomain.RecoveryInput{
+			ExecutionID: input.ExecutionID,
 			InitialState: input.InitialState,
 			ActualState:  actualState,
 		}
@@ -46,7 +78,24 @@ func (s RecoveryService) Recover(
 			marketContext,
 		)
 
+		snapshot.PlansCreated += len(plans)
+
+		if s.store != nil {
+			_ = s.store.Update(&snapshot)
+		}
+
 		if len(plans) == 0 {
+			now := time.Now()
+
+			snapshot.ProcessState = recoveryDomain.RecoveryCompleted
+			snapshot.CompletedAt = &now
+			snapshot.UpdatedAt = now
+			snapshot.ActualState = CloneState(actualState)
+
+			if s.store != nil {
+				_ = s.store.Complete(&snapshot)
+			}
+
 			return actualState, nil
 		}
 
@@ -54,6 +103,15 @@ func (s RecoveryService) Recover(
 
 		for _, plan := range plans {
 			previousState := CloneState(actualState)
+
+			snapshot.ProcessState = recoveryDomain.RecoveryExecuting
+			snapshot.PlansExecuted++
+
+			snapshot.UpdatedAt = time.Now()
+
+			if s.store != nil {
+				_ = s.store.Update(&snapshot)
+			}
 
 			nextState, err := s.executor.Execute(
 				ctx,
@@ -73,17 +131,46 @@ func (s RecoveryService) Recover(
 		}
 
 		if !changed {
-			return actualState, fmt.Errorf(
+
+			err := fmt.Errorf(
 				"recovery made no progress on attempt %d",
 				attempt+1,
 			)
+
+			now := time.Now()
+
+			snapshot.ProcessState =
+				recoveryDomain.RecoveryFailed
+
+			snapshot.CompletedAt = &now
+			snapshot.Error = err.Error()
+			snapshot.UpdatedAt = now
+
+			if s.store != nil {
+				_ = s.store.Complete(&snapshot)
+			}
+			return actualState, err
 		}
 	}
 
-	return actualState, fmt.Errorf(
+	err := fmt.Errorf(
 		"recovery failed after %d attempts",
 		maxRecoveryAttempts,
 	)
+
+	now := time.Now()
+
+	snapshot.ProcessState =
+		recoveryDomain.RecoveryFailed
+
+	snapshot.CompletedAt = &now
+	snapshot.Error = err.Error()
+	snapshot.UpdatedAt = now
+
+	if s.store != nil {
+		_ = s.store.Complete(&snapshot)
+	}
+	return actualState, err
 }
 
 func stateChanged(

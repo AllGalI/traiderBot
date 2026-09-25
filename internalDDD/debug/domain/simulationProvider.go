@@ -56,6 +56,66 @@ func (p *SimulationProvider) Snapshot() (string, error) {
 		metrics.Opportunities,
 	)
 
+	fmt.Fprintln(&builder)
+	fmt.Fprintln(&builder, "Simulation results")
+	fmt.Fprintln(&builder, "------------------")
+
+	fmt.Fprintf(
+		&builder,
+		"OK: %d\n",
+		metrics.SimulationOK,
+	)
+
+	fmt.Fprintf(
+		&builder,
+		"Invalid route: %d\n",
+		metrics.SimulationInvalidRoute,
+	)
+
+	fmt.Fprintf(
+		&builder,
+		"Invalid start amount: %d\n",
+		metrics.SimulationInvalidStartAmount,
+	)
+
+	fmt.Fprintf(
+		&builder,
+		"Order book not found: %d\n",
+		metrics.SimulationOrderBookNotFound,
+	)
+
+	fmt.Fprintf(
+		&builder,
+		"Order book stale: %d\n",
+		metrics.SimulationOrderBookStale,
+	)
+
+	fmt.Fprintf(
+		&builder,
+		"Filters not found: %d\n",
+		metrics.SimulationFiltersNotFound,
+	)
+
+	fmt.Fprintf(
+		&builder,
+		"Fee not found: %d\n",
+		metrics.SimulationFeeNotFound,
+	)
+
+	fmt.Fprintf(
+		&builder,
+		"Insufficient liquidity: %d\n",
+		metrics.SimulationInsufficientLiquidity,
+	)
+
+	fmt.Fprintf(
+		&builder,
+		"Profit too low: %d\n",
+		metrics.SimulationProfitTooLow,
+	)
+
+	fmt.Fprintln(&builder)
+
 	fmt.Fprintf(
 		&builder,
 		"Last update: %s\n",
@@ -100,6 +160,18 @@ func (p *SimulationProvider) Metrics() (any, error) {
 		"totalSimulationTime": metrics.TotalSimulationTime,
 		"lastUpdateAt":        metrics.LastUpdateAt,
 		"lastSimulationAt":    metrics.LastSimulationAt,
+
+		"simulationResults": map[string]uint64{
+			"ok":                    metrics.SimulationOK,
+			"invalidRoute":          metrics.SimulationInvalidRoute,
+			"invalidStartAmount":    metrics.SimulationInvalidStartAmount,
+			"orderBookNotFound":     metrics.SimulationOrderBookNotFound,
+			"orderBookStale":        metrics.SimulationOrderBookStale,
+			"filtersNotFound":       metrics.SimulationFiltersNotFound,
+			"feeNotFound":            metrics.SimulationFeeNotFound,
+			"insufficientLiquidity": metrics.SimulationInsufficientLiquidity,
+			"profitTooLow":           metrics.SimulationProfitTooLow,
+		},
 	}
 
 	if metrics.HasProfitRange {

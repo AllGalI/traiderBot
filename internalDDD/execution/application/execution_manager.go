@@ -20,6 +20,8 @@ type ExecutionManager struct {
 	evaluator        Evaluator
 	orderIDGenerator *exchangeDomain.OrderIDGenerator
 	recoveryService  recoveryApplication.RecoveryService
+
+	executionStore ExecutionStore
 }
 
 func NewExecutionManager(
@@ -28,6 +30,7 @@ func NewExecutionManager(
 	evaluator Evaluator,
 	orderIDGenerator *exchangeDomain.OrderIDGenerator,
 	recoveryService recoveryApplication.RecoveryService,
+	executionStore ExecutionStore,
 ) *ExecutionManager {
 	return &ExecutionManager{
 		exchangeAdapter:  exchangeAdapter,
@@ -35,6 +38,7 @@ func NewExecutionManager(
 		evaluator:        evaluator,
 		orderIDGenerator: orderIDGenerator,
 		recoveryService:  recoveryService,
+		executionStore:   executionStore,
 	}
 }
 
@@ -63,6 +67,13 @@ func (m *ExecutionManager) Execute(
 
 	steps := m.buildExecutionSteps(opportunity)
 
+	m.createExecution(
+		execution,
+		0,
+		len(steps),
+		nil,
+	)
+
 	initialState := m.buildInitialState(opportunity)
 	actualState := recoveryApplication.CloneState(initialState)
 
@@ -76,6 +87,13 @@ func (m *ExecutionManager) Execute(
 		if err := execution.StartExecutingStep(); err != nil {
 			return execution, actualState, err
 		}
+
+		m.persistExecution(
+			execution,
+			step.ID,
+			len(steps),
+			nil,
+		)
 
 		request, err := m.buildOrderRequest(
 			step,
@@ -299,6 +317,19 @@ func (m *ExecutionManager) Execute(
 		}
 	}
 
+	// fmt.Printf(
+	// 	"INFO execution_completed opportunity_id=%s execution_id=%s state=%s\n",
+	// 	opportunity.ID,
+	// 	execution.ID(),
+	// 	execution.State(),
+	// )
+
+	m.completeExecution(
+		execution,
+		len(steps),
+		nil,
+	)
+
 	return execution, actualState, nil
 }
 
@@ -344,21 +375,50 @@ func (m *ExecutionManager) runRecovery(
 	marketContext recoveryApplication.MarketContext,
 	cause error,
 ) (*executionDomain.Execution, recoveryDomain.State, error) {
+	recoveryID := recoveryDomain.NewRecoveryID()
+
+	// fmt.Printf(
+	// 	"INFO recovery_started opportunity_id=%s execution_id=%s recovery_id=%s cause=%v\n",
+	// 	execution.Opportunity().ID,
+	// 	execution.ID(),
+	// 	recoveryID,
+	// 	cause,
+	// )
+
 	recoveredState, err := m.recoveryService.Recover(
 		ctx,
 		recoveryDomain.RecoveryInput{
+			ExecutionID: execution.ID(),
+
 			InitialState: initialState,
 			ActualState:  actualState,
 		},
 		marketContext,
 	)
+
 	if err != nil {
+		// fmt.Printf(
+		// 	"INFO recovery_failed opportunity_id=%s execution_id=%s recovery_id=%s error=%v\n",
+		// 	execution.Opportunity().ID,
+		// 	execution.ID(),
+		// 	recoveryID,
+		// 	err,
+		// )
+
 		return execution, recoveredState, fmt.Errorf(
-			"%w: recovery failed: %w",
+			"%w: recovery %s failed: %w",
 			cause,
+			recoveryID,
 			err,
 		)
 	}
+
+	// fmt.Printf(
+	// 	"INFO recovery_completed opportunity_id=%s execution_id=%s recovery_id=%s\n",
+	// 	execution.Opportunity().ID,
+	// 	execution.ID(),
+	// 	recoveryID,
+	// )
 
 	return execution, recoveredState, nil
 }
@@ -450,4 +510,110 @@ func (m *ExecutionManager) validateOrderResult(
 	}
 
 	return nil
+}
+
+func (m *ExecutionManager) createExecution(
+	execution *executionDomain.Execution,
+	currentStep int,
+	totalSteps int,
+	err error,
+) {
+
+	if m.executionStore == nil {
+		return
+	}
+
+	snapshot := m.snapshot(
+		execution,
+		currentStep,
+		totalSteps,
+		err,
+	)
+	snapshot.StartedAt = time.Now()
+
+	_ = m.executionStore.Create(
+		&snapshot,
+	)
+}
+
+func (m *ExecutionManager) snapshot(
+	execution *executionDomain.Execution,
+	currentStep int,
+	totalSteps int,
+	err error,
+) executionDomain.ExecutionSnapshot {
+
+	now := time.Now()
+
+	result := executionDomain.ExecutionSnapshot{
+		ID: execution.ID(),
+
+		OpportunityID: execution.Opportunity().ID,
+
+		State: execution.State(),
+
+		UpdatedAt: now,
+
+		CurrentStep: currentStep,
+
+		TotalSteps: totalSteps,
+
+		ActualSteps: len(execution.ActualStepResults()),
+	}
+
+	if err != nil {
+		result.Error = err.Error()
+	}
+
+	return result
+}
+
+func (m *ExecutionManager) persistExecution(
+	execution *executionDomain.Execution,
+	currentStep int,
+	totalSteps int,
+	err error,
+) {
+
+	if m.executionStore == nil {
+		return
+	}
+
+	snapshot :=
+		m.snapshot(
+			execution,
+			currentStep,
+			totalSteps,
+			err,
+		)
+
+	_ = m.executionStore.Update(
+		&snapshot,
+	)
+}
+
+func (m *ExecutionManager) completeExecution(
+	execution *executionDomain.Execution,
+	totalSteps int,
+	err error,
+) {
+
+	if m.executionStore == nil {
+		return
+	}
+
+	snapshot := m.snapshot(
+		execution,
+		totalSteps,
+		totalSteps,
+		err,
+	)
+
+	now := time.Now()
+
+	snapshot.CompletedAt = &now
+
+	_ = m.executionStore.Complete(
+		&snapshot,
+	)
 }

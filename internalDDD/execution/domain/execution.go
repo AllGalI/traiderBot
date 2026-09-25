@@ -4,18 +4,28 @@ import (
 	simulationDomain "traiderBot/internalDDD/simulation/domain"
 )
 
+type ExecutionID string
+
 type Execution struct {
+	id                ExecutionID
 	state             ExecutionState
 	opportunity       simulationDomain.Opportunity
 	actualStepResults []ActualStepResult
 }
 
-func NewExecution(opportunity simulationDomain.Opportunity) *Execution {
+func NewExecution(
+	opportunity simulationDomain.Opportunity,
+) *Execution {
 	return &Execution{
+		id:                NewExecutionID(),
 		state:             StateNotStarted,
 		opportunity:       opportunity,
 		actualStepResults: make([]ActualStepResult, 0),
 	}
+}
+
+func (e *Execution) ID() ExecutionID {
+	return e.id
 }
 
 func (e *Execution) State() ExecutionState {

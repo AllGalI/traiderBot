@@ -48,7 +48,7 @@ func NewMarketService(
 func (s *MarketService) Start(
 	ctx context.Context,
 	startAssets map[string]struct{},
-	depth, symbolsLimit int,
+	depth int,
 ) error {
 	log.Println("MarketService: START")
 
@@ -87,24 +87,10 @@ func (s *MarketService) Start(
 
 		log.Println("MarketService: structure cached")
 	}
-	s.structureStore.Set(&structure)
-	close(s.ready)
 
 	symbols := structure.RouteIndex.Symbols()
-
-	log.Printf(
-		"MarketService: total symbols=%d, limit=%d",
-		len(symbols),
-		symbolsLimit,
-	)
-
-	if symbolsLimit <= 0 {
-		return fmt.Errorf("symbols limit must be greater than zero")
-	}
-
-	if symbolsLimit < len(symbols) {
-		symbols = symbols[:symbolsLimit]
-	}
+	s.structureStore.Set(&structure)
+	close(s.ready)
 
 	log.Printf(
 		"MarketService: selected symbols=%v",

@@ -1,5 +1,6 @@
 package domain
 
+
 type RouteIndex map[string][]Route
 
 func BuildRouteIndex(routes []Route) RouteIndex {
@@ -34,4 +35,3 @@ func (index RouteIndex) Symbols() []string {
 
 	return symbols
 }
-

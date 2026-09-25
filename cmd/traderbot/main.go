@@ -9,6 +9,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/joho/godotenv"
+
 	debugApplication "traiderBot/internalDDD/debug/application"
 	debugDomain "traiderBot/internalDDD/debug/domain"
 	"traiderBot/internalDDD/debug/infrastructure/console"
@@ -17,6 +19,7 @@ import (
 
 	executionApplication "traiderBot/internalDDD/execution/application"
 	executionDomain "traiderBot/internalDDD/execution/domain"
+	executionMemory "traiderBot/internalDDD/execution/infrastructure/memory"
 	executionPaper "traiderBot/internalDDD/execution/infrastructure/paper"
 
 	marketApplication "traiderBot/internalDDD/market/application"
@@ -26,10 +29,12 @@ import (
 	"traiderBot/internalDDD/market/infrastructure/cache"
 
 	recoveryApplication "traiderBot/internalDDD/recovery/application"
+	recoveryMemory "traiderBot/internalDDD/recovery/infrastructure/memory"
 
 	simulationApplication "traiderBot/internalDDD/simulation/application"
 	simulationDomain "traiderBot/internalDDD/simulation/domain"
 	simulationBinance "traiderBot/internalDDD/simulation/infrastructure/binance"
+	simulationMemory "traiderBot/internalDDD/simulation/infrastructure/memory"
 
 	"github.com/shopspring/decimal"
 )
@@ -49,13 +54,13 @@ func (h *executionOpportunityHandler) Handle(
 		return
 	}
 
-	log.Printf(
-		"OPPORTUNITY: route=%v profit=%s profitPct=%s fill=%s",
-		opportunity.Route.Symbols(),
-		opportunity.ProfitAbs,
-		opportunity.ProfitPct,
-		opportunity.FillRatio,
-	)
+	// log.Printf(
+	// 	"OPPORTUNITY: route=%v profit=%s profitPct=%s fill=%s",
+	// 	opportunity.Route.Symbols(),
+	// 	opportunity.ProfitAbs,
+	// 	opportunity.ProfitPct,
+	// 	opportunity.FillRatio,
+	// )
 
 	marketContext, err := h.buildMarketContext()
 	if err != nil {
@@ -66,7 +71,8 @@ func (h *executionOpportunityHandler) Handle(
 		return
 	}
 
-	execution, actualState, err := h.manager.Execute(
+	// execution, actualState, err := h.manager.Execute(
+	execution, _, err := h.manager.Execute(
 		context.Background(),
 		*opportunity,
 		marketContext,
@@ -79,31 +85,31 @@ func (h *executionOpportunityHandler) Handle(
 		)
 
 		if execution != nil {
-			log.Printf(
-				"EXECUTION: state=%s actualStepResults=%d",
-				execution.State(),
-				len(execution.ActualStepResults()),
-			)
+			// log.Printf(
+			// 	"EXECUTION: state=%s actualStepResults=%d",
+			// 	execution.State(),
+			// 	len(execution.ActualStepResults()),
+			// )
 		}
 
-		log.Printf(
-			"EXECUTION STATE: %+v",
-			actualState,
-		)
+		// log.Printf(
+		// 	"EXECUTION STATE: %+v",
+		// 	actualState,
+		// )
 
 		return
 	}
 
-	log.Printf(
-		"EXECUTION: state=%s actualStepResults=%d",
-		execution.State(),
-		len(execution.ActualStepResults()),
-	)
+	// log.Printf(
+	// 	"EXECUTION: state=%s actualStepResults=%d",
+	// 	execution.State(),
+	// 	len(execution.ActualStepResults()),
+	// )
 
-	log.Printf(
-		"EXECUTION STATE: %+v",
-		actualState,
-	)
+	// log.Printf(
+	// 	"EXECUTION STATE: %+v",
+	// 	actualState,
+	// )
 }
 func (h *executionOpportunityHandler) buildMarketContext() (
 	recoveryApplication.MarketContext,
@@ -164,6 +170,10 @@ func (h *executionOpportunityHandler) buildMarketContext() (
 }
 
 func main() {
+	if err := godotenv.Load(); err != nil {
+		log.Println("no .env file loaded")
+	}
+
 	ctx, stop := signal.NotifyContext(
 		context.Background(),
 		os.Interrupt,
@@ -173,14 +183,15 @@ func main() {
 
 	const (
 		depth        = 10
-		symbolsLimit = 10
+		symbolsLimit = 30
 	)
 
 	var (
 		minLiquidityFillRatio = decimal.RequireFromString("0.90")
-		minProfitPct          = decimal.RequireFromString("0.001")
-		startAmount           = decimal.RequireFromString("100")
-		maxDeviation          = decimal.RequireFromString("0.003")
+		// minProfitPct          = decimal.RequireFromString("0.001")
+		minProfitPct = decimal.RequireFromString("-0.003")
+		startAmount  = decimal.RequireFromString("100")
+		maxDeviation = decimal.RequireFromString("0.003")
 	)
 
 	// -------------------------------------------------------------------------
@@ -191,6 +202,7 @@ func main() {
 
 	marketStructureService := marketApplication.NewMarketStructureService(
 		symbolProvider,
+		symbolsLimit,
 	)
 
 	marketCache := cache.NewMarketCache("market_cache.json")
@@ -277,7 +289,6 @@ func main() {
 			ctx,
 			startAssets,
 			depth,
-			symbolsLimit,
 		)
 
 		if err != nil {
@@ -332,14 +343,28 @@ func main() {
 		orderIDGenerator,
 	)
 
+	recoveryStore := recoveryMemory.NewRecoveryStore(1000)
+
 	recoveryService := recoveryApplication.NewRecoveryService(
 		recoveryPlanner,
 		recoveryExecutor,
+		recoveryStore,
 	)
 
+	recoveryDebugProvider :=
+		debugDomain.NewRecoveryProvider(
+			recoveryStore,
+		)
 	// -------------------------------------------------------------------------
 	// Execution.
 	// -------------------------------------------------------------------------
+
+	executionStore := executionMemory.NewExecutionStore(1000)
+
+	executionDebugProvider :=
+		debugDomain.NewExecutionProvider(
+			executionStore,
+		)
 
 	evaluator := executionApplication.NewEvaluator(
 		maxDeviation,
@@ -353,6 +378,7 @@ func main() {
 		evaluator,
 		orderIDGenerator,
 		recoveryService,
+		executionStore,
 	)
 
 	opportunityHandler := &executionOpportunityHandler{
@@ -366,11 +392,19 @@ func main() {
 	// Simulation worker.
 	// -------------------------------------------------------------------------
 
+	opportunityStore := simulationMemory.NewOpportunityStore(1000)
+
+	opportunityDebugProvider :=
+		debugDomain.NewOpportunityProvider(
+			opportunityStore,
+		)
+
 	simulationWorker := simulationApplication.NewWorker(
 		marketStructureStore,
 		marketDataService.Updates(),
 		simulationService,
 		opportunityHandler,
+		opportunityStore,
 		startAmount,
 	)
 
@@ -391,6 +425,9 @@ func main() {
 	debugService.Register(graphProvider)
 	debugService.Register(orderBookDebugProvider)
 	debugService.Register(simulationDebugProvider)
+	debugService.Register(opportunityDebugProvider)
+	debugService.Register(executionDebugProvider)
+	debugService.Register(recoveryDebugProvider)
 
 	consoleHandler := console.NewHandler(
 		debugService,

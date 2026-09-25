@@ -1,21 +1,29 @@
 package domain
 
-import "github.com/shopspring/decimal"
+import (
+	executionDomain "traiderBot/internalDDD/execution/domain"
+
+	"github.com/shopspring/decimal"
+)
 
 type State map[string]decimal.Decimal
 
 type RecoveryInput struct {
+	ExecutionID executionDomain.ExecutionID
+
 	InitialState State
 	ActualState  State
-
 }
 
 func NewRecoveryInput(
+	executionID executionDomain.ExecutionID,
 	initial State,
 	actual State,
 ) RecoveryInput {
 
 	return RecoveryInput{
+		ExecutionID: executionID,
+
 		InitialState: initial,
 		ActualState:  actual,
 	}

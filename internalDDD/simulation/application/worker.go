@@ -23,10 +23,11 @@ type OpportunityHandler interface {
 }
 
 type Worker struct {
-	marketStructure MarketStructureReader
-	updates         <-chan string
-	simulation      Simulator
-	opportunities   OpportunityHandler
+	marketStructure  MarketStructureReader
+	updates          <-chan string
+	simulation       Simulator
+	opportunities    OpportunityHandler
+	opportunityStore OpportunityStore
 
 	metrics *WorkerMetrics
 
@@ -38,15 +39,17 @@ func NewWorker(
 	updates <-chan string,
 	simulation Simulator,
 	opportunities OpportunityHandler,
+	opportunityStore OpportunityStore,
 	startAmount decimal.Decimal,
 ) *Worker {
 	return &Worker{
-		marketStructure: marketStructure,
-		updates:         updates,
-		simulation:      simulation,
-		opportunities:   opportunities,
-		metrics:         NewWorkerMetrics(),
-		startAmount:     startAmount,
+		marketStructure:  marketStructure,
+		updates:          updates,
+		simulation:       simulation,
+		opportunities:    opportunities,
+		opportunityStore: opportunityStore,
+		metrics:          NewWorkerMetrics(),
+		startAmount:      startAmount,
 	}
 }
 
@@ -102,8 +105,18 @@ func (w *Worker) runUpdate(
 			time.Since(started),
 		)
 
+		w.metrics.RecordSimulationResult(
+			result.Reason,
+		)
+
 		if result.Opportunity == nil {
 			continue
+		}
+
+		if w.opportunityStore != nil {
+			_ = w.opportunityStore.Save(
+				result.Opportunity,
+			)
 		}
 
 		w.metrics.RecordOpportunity(

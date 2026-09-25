@@ -145,32 +145,11 @@ func (s *SimulationService) Simulate(
 
 		steps = append(steps, step)
 
-		// Коэффициент заполнения маршрута —
-		// произведение коэффициентов заполнения
-		// всех последовательных шагов.
-		//
-		// Например:
-		//
-		// 1.00 × 0.75 × 0.80 × 1.00 = 0.60
 		routeFillRatio = routeFillRatio.Mul(step.FillRatio)
 
-		// Следующий шаг работает с фактически
-		// полученной валютой предыдущего шага.
-		//
-		// Здесь уже учитывается комиссия,
-		// потому что AmountOut содержит
-		// net amount после комиссии.
 		currentAmount = step.AmountOut
 	}
 
-	// Реально исполненный стартовый объём.
-	//
-	// Например:
-	//
-	// requested = 100 USDT
-	// routeFill = 0.60
-	//
-	// executed = 60 USDT
 	executedStartAmount := startAmount.Mul(routeFillRatio)
 
 	profitAbs := currentAmount.Sub(executedStartAmount)
@@ -181,8 +160,6 @@ func (s *SimulationService) Simulate(
 		profitPct = profitAbs.Div(executedStartAmount)
 	}
 
-	// Opportunity создаём только для маршрута,
-	// который прошёл минимальный порог прибыльности.
 	if profitPct.LessThan(s.minProfitPct) {
 		return simulationDomain.SimulationResult{
 			Reason:         simulationDomain.SimulationProfitTooLow,
@@ -190,27 +167,40 @@ func (s *SimulationService) Simulate(
 		}
 	}
 
+	opportunity := &simulationDomain.Opportunity{
+		ID: simulationDomain.NewOpportunityID(),
+
+		Route:      route,
+		Steps:      steps,
+		StartAsset: startAsset(route),
+
+		RequestedStartAmount: startAmount,
+		ExecutedStartAmount:  executedStartAmount,
+		EndAmount:            currentAmount,
+
+		FillRatio: routeFillRatio,
+
+		ProfitAbs: profitAbs,
+		ProfitPct: profitPct,
+
+		Timestamp: time.Now(),
+	}
+
+	// fmt.Printf(
+	// 	"INFO opportunity_created opportunity_id=%s start_asset=%s requested_amount=%s executed_amount=%s end_amount=%s profit_abs=%s profit_pct=%s\n",
+	// 	opportunity.ID,
+	// 	opportunity.StartAsset,
+	// 	opportunity.RequestedStartAmount,
+	// 	opportunity.ExecutedStartAmount,
+	// 	opportunity.EndAmount,
+	// 	opportunity.ProfitAbs,
+	// 	opportunity.ProfitPct,
+	// )
+
 	return simulationDomain.SimulationResult{
 		Reason:         simulationDomain.SimulationOK,
 		RouteFillRatio: routeFillRatio,
-
-		Opportunity: &simulationDomain.Opportunity{
-			Route: route,
-			Steps: steps,
-
-			StartAsset: startAsset(route),
-
-			RequestedStartAmount: startAmount,
-			ExecutedStartAmount:  executedStartAmount,
-			EndAmount:            currentAmount,
-
-			FillRatio: routeFillRatio,
-
-			ProfitAbs: profitAbs,
-			ProfitPct: profitPct,
-
-			Timestamp: time.Now(),
-		},
+		Opportunity:    opportunity,
 	}
 }
 
