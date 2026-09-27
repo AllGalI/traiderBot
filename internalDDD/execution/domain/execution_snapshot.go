@@ -4,12 +4,14 @@ import (
 	"time"
 
 	simulationDomain "traiderBot/internalDDD/simulation/domain"
+
 )
 
 type ExecutionSnapshot struct {
 	ID ExecutionID
 
 	OpportunityID simulationDomain.OpportunityID
+	RecoveryID string
 
 	State ExecutionState
 

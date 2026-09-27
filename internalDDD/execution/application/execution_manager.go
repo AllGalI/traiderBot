@@ -176,15 +176,15 @@ func (m *ExecutionManager) Execute(
 					initialState,
 					actualState,
 					marketContext,
+					recoveryDomain.RecoveryReasonPartialFill,
 					fmt.Errorf(
-						"step %d requires recovery after reconciliation: status %s",
+						"step %d requires recovery: order status %s",
 						step.ID,
-						reconciledResult.Status,
+						result.Status,
 					),
 				)
 
-			case executionDomain.OrderStatusRejected,
-				executionDomain.OrderStatusCancelled:
+			case executionDomain.OrderStatusRejected:
 
 				return m.startRecovery(
 					ctx,
@@ -192,6 +192,23 @@ func (m *ExecutionManager) Execute(
 					initialState,
 					actualState,
 					marketContext,
+					recoveryDomain.RecoveryReasonRejected,
+					fmt.Errorf(
+						"step %d requires recovery after reconciliation: status %s",
+						step.ID,
+						reconciledResult.Status,
+					),
+				)
+
+			case executionDomain.OrderStatusCancelled:
+
+				return m.startRecovery(
+					ctx,
+					execution,
+					initialState,
+					actualState,
+					marketContext,
+					recoveryDomain.RecoveryReasonRejected,
 					fmt.Errorf(
 						"step %d requires recovery after reconciliation: status %s",
 						step.ID,
@@ -229,6 +246,9 @@ func (m *ExecutionManager) Execute(
 				initialState,
 				actualState,
 				marketContext,
+
+				recoveryDomain.RecoveryReasonPartialFill,
+
 				fmt.Errorf(
 					"step %d requires recovery: order status %s",
 					step.ID,
@@ -236,8 +256,22 @@ func (m *ExecutionManager) Execute(
 				),
 			)
 
-		case executionDomain.OrderStatusRejected,
-			executionDomain.OrderStatusCancelled:
+		case executionDomain.OrderStatusRejected:
+			return m.startRecovery(
+				ctx,
+				execution,
+				initialState,
+				actualState,
+				marketContext,
+				recoveryDomain.RecoveryReasonRejected,
+				fmt.Errorf(
+					"step %d requires recovery: order status %s",
+					step.ID,
+					result.Status,
+				),
+			)
+
+		case executionDomain.OrderStatusCancelled:
 
 			return m.startRecovery(
 				ctx,
@@ -245,6 +279,7 @@ func (m *ExecutionManager) Execute(
 				initialState,
 				actualState,
 				marketContext,
+				recoveryDomain.RecoveryReasonCancelled,
 				fmt.Errorf(
 					"step %d requires recovery: order status %s",
 					step.ID,
@@ -309,6 +344,7 @@ func (m *ExecutionManager) Execute(
 				initialState,
 				actualState,
 				marketContext,
+				recoveryDomain.RecoveryReasonDeviation,
 				fmt.Errorf(
 					"step %d requires recovery after evaluation",
 					step.ID,
@@ -339,6 +375,7 @@ func (m *ExecutionManager) startRecovery(
 	initialState recoveryDomain.State,
 	actualState recoveryDomain.State,
 	marketContext recoveryApplication.MarketContext,
+	reason recoveryDomain.RecoveryReason,
 	cause error,
 ) (*executionDomain.Execution, recoveryDomain.State, error) {
 	if err := execution.StartEvaluating(); err != nil {
@@ -363,6 +400,7 @@ func (m *ExecutionManager) startRecovery(
 		initialState,
 		actualState,
 		marketContext,
+		reason,
 		cause,
 	)
 }
@@ -373,22 +411,20 @@ func (m *ExecutionManager) runRecovery(
 	initialState recoveryDomain.State,
 	actualState recoveryDomain.State,
 	marketContext recoveryApplication.MarketContext,
+	reason recoveryDomain.RecoveryReason,
 	cause error,
 ) (*executionDomain.Execution, recoveryDomain.State, error) {
 	recoveryID := recoveryDomain.NewRecoveryID()
 
-	// fmt.Printf(
-	// 	"INFO recovery_started opportunity_id=%s execution_id=%s recovery_id=%s cause=%v\n",
-	// 	execution.Opportunity().ID,
-	// 	execution.ID(),
-	// 	recoveryID,
-	// 	cause,
-	// )
+	execution.AttachRecovery(
+		recoveryID,
+	)
 
 	recoveredState, err := m.recoveryService.Recover(
 		ctx,
 		recoveryDomain.RecoveryInput{
 			ExecutionID: execution.ID(),
+			Reason:      reason,
 
 			InitialState: initialState,
 			ActualState:  actualState,
@@ -397,14 +433,6 @@ func (m *ExecutionManager) runRecovery(
 	)
 
 	if err != nil {
-		// fmt.Printf(
-		// 	"INFO recovery_failed opportunity_id=%s execution_id=%s recovery_id=%s error=%v\n",
-		// 	execution.Opportunity().ID,
-		// 	execution.ID(),
-		// 	recoveryID,
-		// 	err,
-		// )
-
 		return execution, recoveredState, fmt.Errorf(
 			"%w: recovery %s failed: %w",
 			cause,
@@ -412,13 +440,6 @@ func (m *ExecutionManager) runRecovery(
 			err,
 		)
 	}
-
-	// fmt.Printf(
-	// 	"INFO recovery_completed opportunity_id=%s execution_id=%s recovery_id=%s\n",
-	// 	execution.Opportunity().ID,
-	// 	execution.ID(),
-	// 	recoveryID,
-	// )
 
 	return execution, recoveredState, nil
 }
@@ -547,6 +568,8 @@ func (m *ExecutionManager) snapshot(
 
 	result := executionDomain.ExecutionSnapshot{
 		ID: execution.ID(),
+
+		RecoveryID: execution.RecoveryID(),
 
 		OpportunityID: execution.Opportunity().ID,
 

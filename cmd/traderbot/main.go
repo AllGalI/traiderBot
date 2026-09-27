@@ -79,10 +79,10 @@ func (h *executionOpportunityHandler) Handle(
 	)
 
 	if err != nil {
-		log.Printf(
-			"EXECUTION ERROR: %v",
-			err,
-		)
+		// log.Printf(
+		// 	"EXECUTION ERROR: %v",
+		// 	err,
+		// )
 
 		if execution != nil {
 			// log.Printf(
@@ -325,7 +325,12 @@ func main() {
 
 	orderIDGenerator := exchangeDomain.NewOrderIDGenerator()
 
-	paperExecutor := executionPaper.NewExecutor()
+	paperExecutor := executionPaper.NewExecutor(
+		orderBookStore,
+		symbolReader,
+		feeCache,
+		minLiquidityFillRatio,
+	)
 
 	recoveryRouteFinder := recoveryApplication.NewRouteFinder(
 		marketStructure.Graph,

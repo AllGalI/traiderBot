@@ -11,6 +11,8 @@ type Execution struct {
 	state             ExecutionState
 	opportunity       simulationDomain.Opportunity
 	actualStepResults []ActualStepResult
+
+	recoveryID string
 }
 
 func NewExecution(
@@ -42,4 +44,14 @@ func (e *Execution) ActualStepResults() []ActualStepResult {
 
 func (e *Execution) AddActualStepResult(result ActualStepResult) {
 	e.actualStepResults = append(e.actualStepResults, result)
+}
+
+func (e *Execution) RecoveryID() string {
+	return e.recoveryID
+}
+
+func (e *Execution) AttachRecovery(
+	id string,
+) {
+	e.recoveryID = id
 }
