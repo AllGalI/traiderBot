@@ -5,14 +5,12 @@ import (
 	"sync/atomic"
 )
 
-type RecoveryID string
 
 var recoveryIDCounter uint64
 
-func NewRecoveryID() RecoveryID {
+func NewRecoveryID() string {
 	id := atomic.AddUint64(&recoveryIDCounter, 1)
 
-	return RecoveryID(
-		fmt.Sprintf("recovery-%d", id),
-	)
+	return fmt.Sprintf("recovery-%d", id)
+	
 }

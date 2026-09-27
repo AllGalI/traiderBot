@@ -10,6 +10,7 @@ type State map[string]decimal.Decimal
 
 type RecoveryInput struct {
 	ExecutionID executionDomain.ExecutionID
+	Reason      RecoveryReason
 
 	InitialState State
 	ActualState  State

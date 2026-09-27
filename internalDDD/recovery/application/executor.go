@@ -55,13 +55,13 @@ func (e Executor) Execute(
 
 	for stepID, edge := range plan.Route.Edges {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return actualState, err
 		}
 
 		amount := actualState[edge.From]
 
 		if amount.LessThanOrEqual(decimal.Zero) {
-			return nil, fmt.Errorf(
+			return actualState, fmt.Errorf(
 				"recovery asset %s has no amount to execute",
 				edge.From,
 			)
@@ -75,7 +75,7 @@ func (e Executor) Execute(
 			clientOrderID,
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
+			return actualState, fmt.Errorf(
 				"create recovery order for %s -> %s: %w",
 				edge.From,
 				edge.To,
@@ -85,7 +85,7 @@ func (e Executor) Execute(
 
 		result, err := e.exchangeAdapter.Execute(ctx, request)
 		if err != nil {
-			return nil, fmt.Errorf(
+			return actualState, fmt.Errorf(
 				"execute recovery step %d: %w",
 				stepID,
 				err,
@@ -93,7 +93,7 @@ func (e Executor) Execute(
 		}
 
 		if err := validateOrderResult(result); err != nil {
-			return nil, fmt.Errorf(
+			return actualState, fmt.Errorf(
 				"recovery step %d returned invalid order result: %w",
 				stepID,
 				err,
@@ -105,7 +105,7 @@ func (e Executor) Execute(
 
 			result, err = e.reconcile(ctx, request)
 			if err != nil {
-				return nil, fmt.Errorf(
+				return actualState, fmt.Errorf(
 					"reconcile recovery step %d: %w",
 					stepID,
 					err,
@@ -113,7 +113,7 @@ func (e Executor) Execute(
 			}
 
 			if err := validateOrderResult(result); err != nil {
-				return nil, fmt.Errorf(
+				return actualState, fmt.Errorf(
 					"reconciled recovery step %d returned invalid order result: %w",
 					stepID,
 					err,

@@ -3,11 +3,10 @@ package domain
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	recoveryApplication "traiderBot/internalDDD/recovery/application"
 	recoveryDomain "traiderBot/internalDDD/recovery/domain"
-
-	"github.com/shopspring/decimal"
 )
 
 type RecoveryProvider struct {
@@ -66,8 +65,8 @@ func (p *RecoveryProvider) Snapshot() (string, error) {
 
 	fmt.Fprintf(
 		&builder,
-		"Attempts: %d\n",
-		recovery.Attempts,
+		"Reason: %s\n",
+		recovery.Reason,
 	)
 
 	fmt.Fprintf(
@@ -84,11 +83,6 @@ func (p *RecoveryProvider) Snapshot() (string, error) {
 
 	fmt.Fprintln(
 		&builder,
-		"",
-	)
-
-	fmt.Fprintln(
-		&builder,
 		"Initial State:",
 	)
 
@@ -96,7 +90,6 @@ func (p *RecoveryProvider) Snapshot() (string, error) {
 		&builder,
 		recovery.InitialState,
 	)
-
 
 	fmt.Fprintln(
 		&builder,
@@ -108,6 +101,7 @@ func (p *RecoveryProvider) Snapshot() (string, error) {
 		recovery.ActualState,
 	)
 
+	fmt.Fprintln(&builder)
 
 	fmt.Fprintf(
 		&builder,
@@ -121,7 +115,6 @@ func (p *RecoveryProvider) Snapshot() (string, error) {
 		recovery.UpdatedAt,
 	)
 
-
 	if recovery.CompletedAt != nil {
 
 		fmt.Fprintf(
@@ -129,8 +122,15 @@ func (p *RecoveryProvider) Snapshot() (string, error) {
 			"Completed: %s\n",
 			*recovery.CompletedAt,
 		)
-	}
 
+		fmt.Fprintf(
+			&builder,
+			"Duration: %s\n",
+			recovery.CompletedAt.Sub(
+				recovery.StartedAt,
+			),
+		)
+	}
 
 	if recovery.Error != "" {
 
@@ -141,10 +141,8 @@ func (p *RecoveryProvider) Snapshot() (string, error) {
 		)
 	}
 
-
 	return builder.String(), nil
 }
-
 
 func (p *RecoveryProvider) Metrics() (any, error) {
 
@@ -154,77 +152,218 @@ func (p *RecoveryProvider) Metrics() (any, error) {
 		"stored": len(recoveries),
 	}
 
-
 	if len(recoveries) == 0 {
 		return response, nil
 	}
 
+	var (
+		completed int
+		failed    int
 
-	active := 0
-	completed := 0
-	failed := 0
+		totalAttempts int
+		totalDuration time.Duration
 
+		totalPlansCreated   int
+		totalPlansAttempted int
+		totalPlansSucceeded int
+		totalPlansFailed    int
 
-	var totalAttempts decimal.Decimal
+		noProgressAttempts int
 
+		reasons = map[string]int{}
+	)
 
 	for _, recovery := range recoveries {
 
-		totalAttempts = totalAttempts.Add(
-			decimal.NewFromInt(
-				int64(recovery.Attempts),
-			),
-		)
+		reasons[string(recovery.Reason)]++
 
+		totalAttempts += len(recovery.Attempts)
 
 		switch recovery.ProcessState {
 
-		case recoveryDomain.RecoveryStarted,
-			recoveryDomain.RecoveryPlanning,
-			recoveryDomain.RecoveryExecuting:
-
-			active++
-
-
 		case recoveryDomain.RecoveryCompleted:
-
 			completed++
 
-
 		case recoveryDomain.RecoveryFailed:
-
 			failed++
+		}
+
+		if recovery.CompletedAt != nil {
+
+			totalDuration +=
+				recovery.CompletedAt.Sub(
+					recovery.StartedAt,
+				)
+		}
+
+		for _, attempt := range recovery.Attempts {
+
+			totalPlansCreated +=
+				attempt.PlansCreated
+
+			totalPlansAttempted +=
+				attempt.PlansAttempted
+
+			totalPlansSucceeded +=
+				attempt.PlansSucceeded
+
+			totalPlansFailed +=
+				attempt.PlansFailed
+
+			if !attempt.Changed {
+				noProgressAttempts++
+			}
 		}
 	}
 
-
-	response["active"] = active
 	response["completed"] = completed
 	response["failed"] = failed
 
-
 	response["averageAttempts"] =
-		totalAttempts.Div(
-			decimal.NewFromInt(
-				int64(len(recoveries)),
-			),
-		)
+		float64(totalAttempts) /
+			float64(len(recoveries))
 
+	response["averageDuration"] =
+		totalDuration /
+			time.Duration(len(recoveries))
+
+	response["plansCreated"] =
+		totalPlansCreated
+
+	response["plansAttempted"] =
+		totalPlansAttempted
+
+	response["plansSucceeded"] =
+		totalPlansSucceeded
+
+	response["plansFailed"] =
+		totalPlansFailed
+
+	response["noProgressAttempts"] =
+		noProgressAttempts
+
+	response["reasons"] = reasons
 
 	latest := recoveries[len(recoveries)-1]
 
+	response["latestID"] = latest.ID
+	response["latestState"] = latest.ProcessState
+	response["latestReason"] = latest.Reason
 
-	response["latestID"] =
-		latest.ID
+	response["latestAttempts"] = len(
+		latest.Attempts,
+	)
 
+	response["latestPlansCreated"] =
+		latest.PlansCreated
 
-	response["latestState"] =
-		latest.ProcessState
-
+	response["latestPlansExecuted"] =
+		latest.PlansExecuted
 
 	return response, nil
 }
 
+func printAttempt(
+	builder *strings.Builder,
+	attempt recoveryDomain.RecoveryAttemptSnapshot,
+) {
+
+	fmt.Fprintf(
+		builder,
+		"\nAttempt %d\n",
+		attempt.Index,
+	)
+
+	fmt.Fprintln(
+		builder,
+		"---------",
+	)
+
+	fmt.Fprintf(
+		builder,
+		"Plans created: %d\n",
+		attempt.PlansCreated,
+	)
+
+	fmt.Fprintf(
+		builder,
+		"Plans attempted: %d\n",
+		attempt.PlansAttempted,
+	)
+
+	fmt.Fprintf(
+		builder,
+		"Plans succeeded: %d\n",
+		attempt.PlansSucceeded,
+	)
+
+	fmt.Fprintf(
+		builder,
+		"Plans failed: %d\n",
+		attempt.PlansFailed,
+	)
+
+	fmt.Fprintf(
+		builder,
+		"Changed: %t\n",
+		attempt.Changed,
+	)
+
+	if !attempt.StartedAt.IsZero() {
+
+		fmt.Fprintf(
+			builder,
+			"Started: %s\n",
+			attempt.StartedAt,
+		)
+	}
+
+	if attempt.CompletedAt != nil {
+
+		fmt.Fprintf(
+			builder,
+			"Completed: %s\n",
+			*attempt.CompletedAt,
+		)
+
+		fmt.Fprintf(
+			builder,
+			"Duration: %s\n",
+			attempt.CompletedAt.Sub(
+				attempt.StartedAt,
+			),
+		)
+	}
+
+	fmt.Fprintln(
+		builder,
+		"State Before:",
+	)
+
+	printState(
+		builder,
+		attempt.StateBefore,
+	)
+
+	fmt.Fprintln(
+		builder,
+		"State After:",
+	)
+
+	printState(
+		builder,
+		attempt.StateAfter,
+	)
+
+	if attempt.Error != "" {
+
+		fmt.Fprintf(
+			builder,
+			"Error: %s\n",
+			attempt.Error,
+		)
+	}
+}
 
 func printState(
 	builder *strings.Builder,
@@ -232,6 +371,7 @@ func printState(
 ) {
 
 	if len(state) == 0 {
+
 		fmt.Fprintln(
 			builder,
 			"  empty",
@@ -239,7 +379,6 @@ func printState(
 
 		return
 	}
-
 
 	for asset, amount := range state {
 
