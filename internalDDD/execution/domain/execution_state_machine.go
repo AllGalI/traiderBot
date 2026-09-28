@@ -4,7 +4,10 @@ import "fmt"
 
 func (e *Execution) StartPreparing() error {
 	if e.state != StateNotStarted {
-		return fmt.Errorf("cannot start preparing from state %s", e.state)
+		return fmt.Errorf(
+			"cannot start preparing from state %s",
+			e.state,
+		)
 	}
 
 	e.state = StatePreparing
@@ -37,7 +40,9 @@ func (e *Execution) StartEvaluating() error {
 	return nil
 }
 
-func (e *Execution) ApplyDecision(decision ExecutionDecision) error {
+func (e *Execution) ApplyDecision(
+	decision ExecutionDecision,
+) error {
 	if e.state != StateEvaluating {
 		return fmt.Errorf(
 			"cannot apply decision from state %s",
@@ -59,7 +64,10 @@ func (e *Execution) ApplyDecision(decision ExecutionDecision) error {
 		e.state = StateRecovering
 
 	default:
-		return fmt.Errorf("unknown execution decision: %s", decision)
+		return fmt.Errorf(
+			"unknown execution decision: %s",
+			decision,
+		)
 	}
 
 	return nil
@@ -67,7 +75,10 @@ func (e *Execution) ApplyDecision(decision ExecutionDecision) error {
 
 func (e *Execution) RequireReconciliation() error {
 	switch e.state {
-	case StateExecutingStep, StateRecovering, StateEvaluating:
+	case StateExecutingStep,
+		StateRecovering,
+		StateEvaluating:
+
 		e.state = StateReconciliationRequired
 		return nil
 
@@ -77,4 +88,41 @@ func (e *Execution) RequireReconciliation() error {
 			e.state,
 		)
 	}
+}
+
+func (e *Execution) Complete() error {
+	switch e.state {
+	case StateFinalizing,
+		StateRecovering,
+		StateReconciliationRequired:
+
+		e.state = StateCompleted
+		return nil
+
+	default:
+		return fmt.Errorf(
+			"cannot complete execution from state %s",
+			e.state,
+		)
+	}
+}
+
+func (e *Execution) Fail() error {
+	if e.state == StateCompleted {
+		return fmt.Errorf(
+			"cannot fail completed execution",
+		)
+	}
+
+	if e.state == StateFailed {
+		return nil
+	}
+
+	e.state = StateFailed
+	return nil
+}
+
+func (e *Execution) IsFinished() bool {
+	return e.state == StateCompleted ||
+		e.state == StateFailed
 }

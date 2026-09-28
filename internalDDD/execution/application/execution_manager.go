@@ -46,7 +46,11 @@ func (m *ExecutionManager) Execute(
 	ctx context.Context,
 	opportunity simulationDomain.Opportunity,
 	marketContext recoveryApplication.MarketContext,
-) (*executionDomain.Execution, recoveryDomain.State, error) {
+) (
+	execution *executionDomain.Execution,
+	actualState recoveryDomain.State,
+	err error,
+) {
 	if m.exchangeAdapter == nil {
 		return nil, nil, fmt.Errorf("exchange adapter is not configured")
 	}
@@ -59,13 +63,33 @@ func (m *ExecutionManager) Execute(
 		return nil, nil, fmt.Errorf("opportunity route has no edges")
 	}
 
-	execution := executionDomain.NewExecution(opportunity)
+	execution = executionDomain.NewExecution(opportunity)
 
-	if err := execution.StartPreparing(); err != nil {
+	if err = execution.StartPreparing(); err != nil {
 		return execution, nil, err
 	}
 
 	steps := m.buildExecutionSteps(opportunity)
+
+	defer func() {
+		if execution == nil {
+			return
+		}
+
+		if err == nil {
+			return
+		}
+
+		if execution.IsFinished() {
+			return
+		}
+
+		m.failExecution(
+			execution,
+			len(steps),
+			err,
+		)
+	}()
 
 	m.createExecution(
 		execution,
@@ -75,7 +99,7 @@ func (m *ExecutionManager) Execute(
 	)
 
 	initialState := m.buildInitialState(opportunity)
-	actualState := recoveryApplication.CloneState(initialState)
+	actualState = recoveryApplication.CloneState(initialState)
 
 	currentAmount := opportunity.RequestedStartAmount
 
@@ -208,7 +232,7 @@ func (m *ExecutionManager) Execute(
 					initialState,
 					actualState,
 					marketContext,
-					recoveryDomain.RecoveryReasonRejected,
+					recoveryDomain.RecoveryReasonCancelled,
 					fmt.Errorf(
 						"step %d requires recovery after reconciliation: status %s",
 						step.ID,
@@ -360,11 +384,13 @@ func (m *ExecutionManager) Execute(
 	// 	execution.State(),
 	// )
 
-	m.completeExecution(
+	if err := m.completeExecution(
 		execution,
 		len(steps),
 		nil,
-	)
+	); err != nil {
+		return execution, actualState, err
+	}
 
 	return execution, actualState, nil
 }
@@ -439,6 +465,14 @@ func (m *ExecutionManager) runRecovery(
 			recoveryID,
 			err,
 		)
+	}
+
+	if err := m.completeExecution(
+		execution,
+		len(execution.Opportunity().Route.Edges),
+		nil,
+	); err != nil {
+		return execution, recoveredState, err
 	}
 
 	return execution, recoveredState, nil
@@ -619,16 +653,66 @@ func (m *ExecutionManager) completeExecution(
 	execution *executionDomain.Execution,
 	totalSteps int,
 	err error,
-) {
+) error {
+	if err != nil {
+		return m.failExecution(
+			execution,
+			totalSteps,
+			err,
+		)
+	}
+
+	if err := execution.Complete(); err != nil {
+		return err
+	}
 
 	if m.executionStore == nil {
-		return
+		return nil
 	}
 
 	snapshot := m.snapshot(
 		execution,
 		totalSteps,
 		totalSteps,
+		nil,
+	)
+
+	now := time.Now()
+
+	snapshot.CompletedAt = &now
+
+	_ = m.executionStore.Complete(
+		&snapshot,
+	)
+
+	return nil
+}
+
+func (m *ExecutionManager) failExecution(
+	execution *executionDomain.Execution,
+	currentStep int,
+	err error,
+) error {
+	if execution == nil {
+		return nil
+	}
+
+	if execution.IsFinished() {
+		return nil
+	}
+
+	if failErr := execution.Fail(); failErr != nil {
+		return failErr
+	}
+
+	if m.executionStore == nil {
+		return nil
+	}
+
+	snapshot := m.snapshot(
+		execution,
+		currentStep,
+		len(execution.Opportunity().Route.Edges),
 		err,
 	)
 
@@ -639,4 +723,6 @@ func (m *ExecutionManager) completeExecution(
 	_ = m.executionStore.Complete(
 		&snapshot,
 	)
+
+	return nil
 }

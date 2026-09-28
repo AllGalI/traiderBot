@@ -10,6 +10,9 @@ const (
 	StateRecovering             ExecutionState = "Recovering"
 	StateReconciliationRequired ExecutionState = "ReconciliationRequired"
 	StateFinalizing             ExecutionState = "Finalizing"
+
+	StateCompleted ExecutionState = "Completed"
+	StateFailed    ExecutionState = "Failed"
 )
 
 type ExecutionDecision string
