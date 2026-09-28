@@ -24,8 +24,8 @@ func (e Evaluator) Evaluate(
 	actual executionDomain.ActualStepResult,
 ) executionDomain.ExecutionDecision {
 
-	expectedAmount := expected.AmountOut
-	actualAmount := actual.Output.Quantity
+	expectedAmount := expected.GrossOutput
+	actualAmount := actual.GrossOutput.Quantity
 
 	if expectedAmount.LessThanOrEqual(decimal.Zero) {
 		return executionDomain.DecisionRecoveryRequired

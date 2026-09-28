@@ -24,22 +24,56 @@ func (m ActualStepResultMapper) Map(
 		return ActualStepResult{}, fmt.Errorf("step destination asset is required")
 	}
 
-	if result.ExecutedAmount.IsNegative() || result.ReceivedAmount.IsNegative() {
+	if result.ExecutedAmount.IsNegative() ||
+		result.ReceivedAmount.IsNegative() ||
+		result.Fee.IsNegative() {
 		return ActualStepResult{}, fmt.Errorf(
 			"order amounts must not be negative",
 		)
 	}
 
+	if result.Fee.GreaterThan(result.ReceivedAmount) {
+		return ActualStepResult{}, fmt.Errorf(
+			"fee must not be greater than received amount",
+		)
+	}
+
+	feeAsset := result.FeeAsset
+	if feeAsset == "" {
+		return ActualStepResult{}, fmt.Errorf(
+			"fee asset is required",
+		)
+	}
+
+	netOutput := result.ReceivedAmount
+
+	if feeAsset == step.Edge.To {
+		netOutput = result.ReceivedAmount.Sub(result.Fee)
+	}
+
 	return ActualStepResult{
 		StepID: step.ID,
-		Input: AssetAmount{
+
+		ActualInput: AssetAmount{
 			Asset:    step.Edge.From,
 			Quantity: result.ExecutedAmount,
 		},
-		Output: AssetAmount{
+
+		GrossOutput: AssetAmount{
 			Asset:    step.Edge.To,
 			Quantity: result.ReceivedAmount,
 		},
+
+		Fee: AssetAmount{
+			Asset:    feeAsset,
+			Quantity: result.Fee,
+		},
+
+		NetOutput: AssetAmount{
+			Asset:    step.Edge.To,
+			Quantity: netOutput,
+		},
+
 		CompletedAt: completedAt,
 	}, nil
 }

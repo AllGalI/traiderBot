@@ -6,6 +6,8 @@ import (
 	"time"
 
 	recoveryDomain "traiderBot/internalDDD/recovery/domain"
+
+	"github.com/shopspring/decimal"
 )
 
 const maxRecoveryAttempts = 3
@@ -33,23 +35,19 @@ func (s RecoveryService) Recover(
 	input recoveryDomain.RecoveryInput,
 	marketContext MarketContext,
 ) (recoveryDomain.State, error) {
-
 	actualState := CloneState(input.ActualState)
 
 	now := time.Now()
 
 	snapshot := recoveryDomain.RecoverySnapshot{
-		ID:          recoveryDomain.NewRecoveryID(),
-		ExecutionID: input.ExecutionID,
-		Reason:      input.Reason,
-
+		ID:           recoveryDomain.NewRecoveryID(),
+		ExecutionID:  input.ExecutionID,
+		Reason:       input.Reason,
 		ProcessState: recoveryDomain.RecoveryStarted,
-
 		InitialState: CloneState(actualState),
 		ActualState:  CloneState(actualState),
-
-		StartedAt: now,
-		UpdatedAt: now,
+		StartedAt:    now,
+		UpdatedAt:    now,
 	}
 
 	if s.store != nil {
@@ -66,10 +64,12 @@ func (s RecoveryService) Recover(
 		}
 
 		snapshot.ProcessState = recoveryDomain.RecoveryPlanning
+
 		snapshot.Attempts = append(
 			snapshot.Attempts,
 			attemptSnapshot,
 		)
+
 		snapshot.UpdatedAt = time.Now()
 
 		if s.store != nil {
@@ -77,20 +77,11 @@ func (s RecoveryService) Recover(
 		}
 
 		if err := ctx.Err(); err != nil {
-			lastErr = err
-
-			attemptSnapshot.Error = err.Error()
-			attemptSnapshot.StateAfter = CloneState(actualState)
-
-			completedAt := time.Now()
-			attemptSnapshot.CompletedAt = &completedAt
-
-			snapshot.Attempts[len(snapshot.Attempts)-1] = attemptSnapshot
-			snapshot.ActualState = CloneState(actualState)
 			snapshot.ProcessState = recoveryDomain.RecoveryFailed
-			snapshot.CompletedAt = &completedAt
+			snapshot.CompletedAt = ptrTime(time.Now())
 			snapshot.Error = err.Error()
-			snapshot.UpdatedAt = completedAt
+			snapshot.ActualState = CloneState(actualState)
+			snapshot.UpdatedAt = time.Now()
 
 			if s.store != nil {
 				_ = s.store.Complete(&snapshot)
@@ -122,18 +113,32 @@ func (s RecoveryService) Recover(
 		}
 
 		if len(plans) == 0 {
-			completedAt := time.Now()
+			now := time.Now()
 
-			attemptSnapshot.StateAfter = CloneState(actualState)
-			attemptSnapshot.Changed = false
-			attemptSnapshot.CompletedAt = &completedAt
+			if hasRecoverableAssets(
+				actualState,
+				targetAssetFromState(input.InitialState),
+			) {
+				snapshot.ProcessState =
+					recoveryDomain.RecoveryCompletedWithResidual
 
-			snapshot.Attempts[len(snapshot.Attempts)-1] = attemptSnapshot
+				snapshot.CompletedAt = &now
+				snapshot.Error = ""
+				snapshot.ActualState = CloneState(actualState)
+				snapshot.UpdatedAt = now
+
+				if s.store != nil {
+					_ = s.store.Complete(&snapshot)
+				}
+
+				return actualState, nil
+			}
 
 			snapshot.ProcessState = recoveryDomain.RecoveryCompleted
-			snapshot.CompletedAt = &completedAt
+			snapshot.CompletedAt = &now
+			snapshot.Error = ""
 			snapshot.ActualState = CloneState(actualState)
-			snapshot.UpdatedAt = completedAt
+			snapshot.UpdatedAt = now
 
 			if s.store != nil {
 				_ = s.store.Complete(&snapshot)
@@ -169,13 +174,17 @@ func (s RecoveryService) Recover(
 				actualState = nextState
 			}
 
-			if stateChanged(previousState, actualState) {
+			if stateChanged(
+				previousState,
+				actualState,
+			) {
 				changed = true
 			}
 
 			if err != nil {
 				attemptSnapshot.PlansFailed++
 				attemptSnapshot.Error = err.Error()
+
 				lastErr = err
 
 				break
@@ -188,10 +197,10 @@ func (s RecoveryService) Recover(
 		attemptSnapshot.StateAfter = CloneState(actualState)
 
 		completedAt := time.Now()
+
 		attemptSnapshot.CompletedAt = &completedAt
 
 		snapshot.Attempts[len(snapshot.Attempts)-1] = attemptSnapshot
-
 		snapshot.ActualState = CloneState(actualState)
 		snapshot.UpdatedAt = completedAt
 
@@ -258,7 +267,7 @@ func (s RecoveryService) Recover(
 }
 
 func stateChanged(
-	before recoveryDomain.State,
+	before,
 	after recoveryDomain.State,
 ) bool {
 	if len(before) != len(after) {
@@ -274,4 +283,37 @@ func stateChanged(
 	}
 
 	return false
+}
+
+func targetAssetFromState(
+	initialState recoveryDomain.State,
+) string {
+	for asset, amount := range initialState {
+		if amount.GreaterThan(decimal.Zero) {
+			return asset
+		}
+	}
+
+	return ""
+}
+
+func hasRecoverableAssets(
+	actualState recoveryDomain.State,
+	targetAsset string,
+) bool {
+	for asset, amount := range actualState {
+		if asset == targetAsset {
+			continue
+		}
+
+		if amount.GreaterThan(decimal.Zero) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func ptrTime(value time.Time) *time.Time {
+	return &value
 }

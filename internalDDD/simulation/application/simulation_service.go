@@ -117,6 +117,20 @@ func (s *SimulationService) Simulate(
 			}
 		}
 
+		// if symbol.Name == "BTCUSDT" {
+		// 	fmt.Printf(
+		// 		"[SIM] %s updated=%s ask0=%s@%s bid0=%s@%s amount=%s\n",
+		// 		edge.Symbol,
+		// 		orderBook.LastUpdateTime,
+		// 		orderBook.Asks[0].Qty,
+		// 		orderBook.Asks[0].Price,
+		// 		orderBook.Bids[0].Qty,
+		// 		orderBook.Bids[0].Price,
+		// 		currentAmount,
+		// 	)
+
+		// }
+
 		step, err := simulationDomain.SimulateStep(
 			edge,
 			orderBook,
@@ -147,7 +161,7 @@ func (s *SimulationService) Simulate(
 
 		routeFillRatio = routeFillRatio.Mul(step.FillRatio)
 
-		currentAmount = step.AmountOut
+		currentAmount = step.NetOutput
 	}
 
 	executedStartAmount := startAmount.Mul(routeFillRatio)

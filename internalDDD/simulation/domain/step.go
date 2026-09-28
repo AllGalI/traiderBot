@@ -10,21 +10,29 @@ import (
 
 type StepResult struct {
 	Edge marketDomain.GraphEdge
-
 	AvgPrice decimal.Decimal
 	Quantity decimal.Decimal
 	QuoteQty decimal.Decimal
 
-	AmountIn  decimal.Decimal
-	AmountOut decimal.Decimal
+	// RequestedInput — исходный объём входного актива,
+	// который мы хотели исполнить.
+	RequestedInput decimal.Decimal
 
-	// Доля реально исполненного входного объёма.
-	//
-	// 1.0 = полное заполнение.
-	// 0.75 = исполнено 75%.
+	// ExecutedInput — объём входного актива,
+	// который реально был исполнен по order book
+	// до комиссии.
+	ExecutedInput decimal.Decimal
+
+	// GrossOutput — результат сделки до комиссии.
+	GrossOutput decimal.Decimal
+
+	// NetOutput — результат сделки после комиссии.
+	NetOutput decimal.Decimal
+
+	// FillRatio = ExecutedInput / RequestedInput.
 	FillRatio decimal.Decimal
 
-	// Комиссия.
+	// Комиссия в валюте результата сделки.
 	Fee      decimal.Decimal
 	FeeAsset string
 }
@@ -146,15 +154,17 @@ func SimulateStep(
 	}
 
 	return StepResult{
-		Edge:      edge,
-		AvgPrice:  avgPrice,
-		Quantity:  quantity,
-		QuoteQty:  quoteQty,
-		AmountIn:  filledInput,
-		AmountOut: netAmountOut,
-		FillRatio: fillRatio,
-		Fee:       fee,
-		FeeAsset:  feeAsset,
+		Edge:           edge,
+		AvgPrice:       avgPrice,
+		Quantity:       quantity,
+		QuoteQty:       quoteQty,
+		RequestedInput: amountIn,
+		ExecutedInput:  filledInput,
+		GrossOutput:    amountOut,
+		NetOutput:      netAmountOut,
+		FillRatio:      fillRatio,
+		Fee:            fee,
+		FeeAsset:       feeAsset,
 	}, nil
 }
 

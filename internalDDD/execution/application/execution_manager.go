@@ -101,7 +101,7 @@ func (m *ExecutionManager) Execute(
 	initialState := m.buildInitialState(opportunity)
 	actualState = recoveryApplication.CloneState(initialState)
 
-	currentAmount := opportunity.RequestedStartAmount
+	currentAmount := opportunity.ExecutedStartAmount
 
 	for _, step := range steps {
 		if err := ctx.Err(); err != nil {
@@ -119,9 +119,15 @@ func (m *ExecutionManager) Execute(
 			nil,
 		)
 
+		requestAmount := currentAmount
+
+		if step.ID == 0 {
+			requestAmount = step.PlannedInput.Quantity
+		}
+
 		request, err := m.buildOrderRequest(
 			step,
-			currentAmount,
+			requestAmount,
 		)
 		if err != nil {
 			return execution, actualState, err
@@ -131,6 +137,15 @@ func (m *ExecutionManager) Execute(
 			ctx,
 			request,
 		)
+		// fmt.Printf(
+		// 	"[EXECUTION] step=%d order=%s status=%s start amount=%s, executed=%s received=%s\n",
+		// 	step.ID,
+		// 	request.ClientOrderID,
+		// 	result.Status,
+		// 	opportunity.ExecutedStartAmount,
+		// 	result.ExecutedAmount,
+		// 	result.ReceivedAmount,
+		// )
 		if err != nil {
 			return execution, actualState, fmt.Errorf(
 				"execute step %d: %w",
@@ -342,7 +357,7 @@ func (m *ExecutionManager) Execute(
 			result,
 		)
 
-		currentAmount = actualResult.Output.Quantity
+		currentAmount = actualResult.NetOutput.Quantity
 
 		if step.ID >= len(steps)-1 {
 			continue
@@ -356,6 +371,11 @@ func (m *ExecutionManager) Execute(
 			opportunity.Steps[step.ID],
 			actualResult,
 		)
+		// fmt.Printf(
+		// 	"[EXECUTION] step=%d evaluation decision=%s\n",
+		// 	step.ID,
+		// 	decision,
+		// )
 
 		if err := execution.ApplyDecision(decision); err != nil {
 			return execution, actualState, err
@@ -505,6 +525,12 @@ func (m *ExecutionManager) applyOrderResult(
 		result.ReceivedAmount,
 	)
 
+	if !result.Fee.IsZero() {
+		nextState[result.FeeAsset] = nextState[result.FeeAsset].Sub(
+			result.Fee,
+		)
+	}
+
 	return nextState
 }
 
@@ -514,15 +540,19 @@ func (m *ExecutionManager) buildExecutionSteps(
 	steps := make(
 		[]executionDomain.ExecutionStep,
 		0,
-		len(opportunity.Route.Edges),
+		len(opportunity.Steps),
 	)
 
-	for index, edge := range opportunity.Route.Edges {
+	for index, step := range opportunity.Steps {
 		steps = append(
 			steps,
 			executionDomain.ExecutionStep{
 				ID:   index,
-				Edge: edge,
+				Edge: step.Edge,
+				PlannedInput: executionDomain.AssetAmount{
+					Asset:    step.Edge.From,
+					Quantity: step.ExecutedInput,
+				},
 			},
 		)
 	}
@@ -704,6 +734,13 @@ func (m *ExecutionManager) failExecution(
 	if failErr := execution.Fail(); failErr != nil {
 		return failErr
 	}
+	fmt.Printf(
+		"[EXECUTION-FAILED] execution=%s opportunity=%s step=%d error=%v\n",
+		execution.ID(),
+		execution.Opportunity().ID,
+		currentStep,
+		err,
+	)
 
 	if m.executionStore == nil {
 		return nil

@@ -18,9 +18,18 @@ type Opportunity struct {
 
 	StartAsset string
 
+	// RequestedStartAmount — сколько входного актива
+	// изначально хотели использовать для opportunity.
 	RequestedStartAmount decimal.Decimal
-	ExecutedStartAmount  decimal.Decimal
-	EndAmount            decimal.Decimal
+
+	// ExecutedStartAmount — сколько входного актива
+	// реально может быть исполнено на первом шаге
+	// согласно Simulation.
+	ExecutedStartAmount decimal.Decimal
+
+	// EndAmount — конечный NET результат маршрута
+	// после комиссий всех шагов.
+	EndAmount decimal.Decimal
 
 	FillRatio decimal.Decimal
 

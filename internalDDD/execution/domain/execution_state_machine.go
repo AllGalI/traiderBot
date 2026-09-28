@@ -52,7 +52,7 @@ func (e *Execution) ApplyDecision(
 
 	switch decision {
 	case DecisionContinue:
-		e.state = StateExecutingStep
+		e.state = StateEvaluating
 
 	case DecisionComplete:
 		e.state = StateFinalizing

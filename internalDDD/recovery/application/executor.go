@@ -83,7 +83,10 @@ func (e Executor) Execute(
 			)
 		}
 
-		result, err := e.exchangeAdapter.Execute(ctx, request)
+		result, err := e.exchangeAdapter.Execute(
+			ctx,
+			request,
+		)
 		if err != nil {
 			return actualState, fmt.Errorf(
 				"execute recovery step %d: %w",
@@ -103,7 +106,10 @@ func (e Executor) Execute(
 		if result.Status == exchangeDomain.OrderStatusPending ||
 			result.Status == exchangeDomain.OrderStatusUnknown {
 
-			result, err = e.reconcile(ctx, request)
+			result, err = e.reconcile(
+				ctx,
+				request,
+			)
 			if err != nil {
 				return actualState, fmt.Errorf(
 					"reconcile recovery step %d: %w",
@@ -123,15 +129,26 @@ func (e Executor) Execute(
 
 		switch result.Status {
 		case exchangeDomain.OrderStatusFilled:
-			applyOrderResult(actualState, edge, result)
+			applyOrderResult(
+				actualState,
+				edge,
+				result,
+			)
 
 		case exchangeDomain.OrderStatusPartiallyFilled:
-			applyOrderResult(actualState, edge, result)
-
-			return actualState, fmt.Errorf(
-				"recovery step %d partially filled",
-				stepID,
+			applyOrderResult(
+				actualState,
+				edge,
+				result,
 			)
+
+			// Частичное исполнение — не фатальная ошибка.
+			//
+			// Фактически исполненная часть уже применена
+			// к state. RecoveryService увидит изменение
+			// состояния и на следующей попытке построит
+			// новый план для оставшегося баланса.
+			return actualState, nil
 
 		case exchangeDomain.OrderStatusRejected:
 			return actualState, fmt.Errorf(
@@ -187,6 +204,12 @@ func applyOrderResult(
 	state[edge.To] = state[edge.To].Add(
 		result.ReceivedAmount,
 	)
+
+	if !result.Fee.IsZero() {
+		state[result.FeeAsset] = state[result.FeeAsset].Sub(
+			result.Fee,
+		)
+	}
 }
 
 func validateOrderResult(
@@ -207,6 +230,13 @@ func validateOrderResult(
 	if result.Fee.IsNegative() {
 		return fmt.Errorf(
 			"fee must not be negative",
+		)
+	}
+
+	if result.Fee.GreaterThan(decimal.Zero) &&
+		result.FeeAsset == "" {
+		return fmt.Errorf(
+			"fee asset must be provided when fee is non-zero",
 		)
 	}
 

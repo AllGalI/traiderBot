@@ -3,15 +3,20 @@ package application
 import (
 	"github.com/shopspring/decimal"
 
-	marketDomain "traiderBot/internalDDD/market/domain"
 	recoveryDomain "traiderBot/internalDDD/recovery/domain"
+	simulationDomain "traiderBot/internalDDD/simulation/domain"
 )
 
 type Simulator struct {
+	minFillRatio decimal.Decimal
 }
 
-func NewSimulator() Simulator {
-	return Simulator{}
+func NewSimulator(
+	minFillRatio decimal.Decimal,
+) Simulator {
+	return Simulator{
+		minFillRatio: minFillRatio,
+	}
 }
 
 func (s Simulator) Simulate(
@@ -29,196 +34,64 @@ func (s Simulator) Simulate(
 	)
 
 	for _, edge := range route.Edges {
-
-		_, ok :=
-			ctx.Symbols[edge.Symbol]
-
+		symbol, ok := ctx.Symbols[edge.Symbol]
 		if !ok {
 			return recoveryDomain.SimulationResult{}
 		}
 
-		book, ok :=
-			ctx.OrderBooks[edge.Symbol]
-
+		book, ok := ctx.OrderBooks[edge.Symbol]
 		if !ok {
 			return recoveryDomain.SimulationResult{}
 		}
 
-		fee, ok :=
-			ctx.Fees[edge.Symbol]
-
+		fee, ok := ctx.Fees[edge.Symbol]
 		if !ok {
 			return recoveryDomain.SimulationResult{}
 		}
 
-		output, price, feeAmount, ok :=
-			s.simulateEdge(
-				edge,
-				currentAmount,
-				book,
-				fee,
-			)
-
-		if !ok {
+		step, err := simulationDomain.SimulateStep(
+			edge,
+			book,
+			symbol.Constraints,
+			currentAmount,
+			s.minFillRatio,
+			fee.Taker,
+			edge.To,
+		)
+		if err != nil {
 			return recoveryDomain.SimulationResult{}
 		}
 
-		step := recoveryDomain.RecoveryStep{
-
-			FromAsset: edge.From,
-
-			ToAsset: edge.To,
-
-			Symbol: edge.Symbol,
-
-			Direction: edge.Direction,
-
-			InputAmount: currentAmount,
-
-			SimulatedOutput: output,
-
-			SimulatedPrice: price,
-
-			SimulatedFee: feeAmount,
+		recoveryStep := recoveryDomain.RecoveryStep{
+			FromAsset:      edge.From,
+			ToAsset:        edge.To,
+			Symbol:         edge.Symbol,
+			Direction:      edge.Direction,
+			RequestedInput: step.RequestedInput,
+			ExecutedInput:  step.ExecutedInput,
+			GrossOutput:    step.GrossOutput,
+			NetOutput:      step.NetOutput,
+			SimulatedPrice: step.AvgPrice,
+			SimulatedFee:   step.Fee,
+			FillRatio:      step.FillRatio,
 		}
 
 		steps = append(
 			steps,
-			step,
+			recoveryStep,
 		)
 
-		currentAmount = output
+		currentAmount = step.NetOutput
+	}
+
+	if len(steps) == 0 {
+		return recoveryDomain.SimulationResult{}
 	}
 
 	return recoveryDomain.SimulationResult{
-
-		Route: route,
-
-		InputAmount: amount,
-
+		Route:        route,
+		InputAmount:  amount,
 		OutputAmount: currentAmount,
-
-		Steps: steps,
+		Steps:        steps,
 	}
-}
-
-func (s Simulator) simulateEdge(
-	edge marketDomain.GraphEdge,
-	amount decimal.Decimal,
-	book marketDomain.OrderBook,
-	fee marketDomain.FeeRate,
-) (
-	output decimal.Decimal,
-	price decimal.Decimal,
-	feeAmount decimal.Decimal,
-	ok bool,
-) {
-
-	switch edge.Direction {
-
-	case marketDomain.Sell:
-
-		return s.simulateSell(
-			amount,
-			book,
-			fee,
-		)
-
-	case marketDomain.Buy:
-
-		return s.simulateBuy(
-			amount,
-			book,
-			fee,
-		)
-	}
-
-	return decimal.Zero,
-		decimal.Zero,
-		decimal.Zero,
-		false
-}
-
-func (s Simulator) simulateBuy(
-	amount decimal.Decimal,
-	book marketDomain.OrderBook,
-	fee marketDomain.FeeRate,
-) (
-	decimal.Decimal,
-	decimal.Decimal,
-	decimal.Decimal,
-	bool,
-) {
-
-	best, ok :=
-		book.GetBestAsk()
-
-	if !ok {
-		return decimal.Zero,
-			decimal.Zero,
-			decimal.Zero,
-			false
-	}
-
-	gross :=
-		amount.Div(
-			best.Price,
-		)
-
-	feeAmount :=
-		gross.Mul(
-			fee.Taker,
-		)
-
-	net :=
-		gross.Sub(
-			feeAmount,
-		)
-
-	return net,
-		best.Price,
-		feeAmount,
-		true
-}
-
-func (s Simulator) simulateSell(
-	amount decimal.Decimal,
-	book marketDomain.OrderBook,
-	fee marketDomain.FeeRate,
-) (
-	decimal.Decimal,
-	decimal.Decimal,
-	decimal.Decimal,
-	bool,
-) {
-
-	best, ok :=
-		book.GetBestBid()
-
-	if !ok {
-		return decimal.Zero,
-			decimal.Zero,
-			decimal.Zero,
-			false
-	}
-
-	gross :=
-		amount.Mul(
-			best.Price,
-		)
-
-	feeAmount :=
-		gross.Mul(
-			fee.Taker,
-		)
-
-	net :=
-		gross.Sub(
-			feeAmount,
-		)
-
-	return net,
-		best.Price,
-		feeAmount,
-		true
 }

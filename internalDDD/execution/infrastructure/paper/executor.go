@@ -125,6 +125,17 @@ func (e *Executor) Execute(
 			request.Edge.Symbol,
 		)
 	}
+	
+	// if request.Edge.Symbol == "BTCUSDT" {
+	// 	fmt.Printf(
+	// 		"[EXEC] symbol=%s updatedAt=%s amountIn=%s bids=%d asks=%d\n",
+	// 		request.Edge.Symbol,
+	// 		orderBook.LastUpdateTime,
+	// 		request.Amount,
+	// 		len(orderBook.Bids),
+	// 		len(orderBook.Asks),
+	// 	)
+	// }
 
 	symbol, ok := e.symbols.Get(request.Edge.Symbol)
 	if !ok {
@@ -159,19 +170,41 @@ func (e *Executor) Execute(
 		)
 	}
 
+	// fmt.Printf(
+	// 	"[EXEC-SIM] symbol=%s requested=%s executed=%s diff=%s ratio=%s grossOut=%s netOut=%s fee=%s qty=%s stepSize=%s\n",
+	// 	request.Edge.Symbol,
+	// 	request.Amount,
+	// 	step.ExecutedInput,
+	// 	request.Amount.Sub(step.ExecutedInput),
+	// 	step.FillRatio,
+	// 	step.GrossOutput,
+	// 	step.NetOutput,
+	// 	step.Fee,
+	// 	step.Quantity,
+	// 	symbol.Constraints.StepSize,
+	// )
+
+	// fmt.Printf(
+	// 	"[EXEC-SIM] symbol=%s direction=%d from=%s to=%s ...\n",
+	// 	request.Edge.Symbol,
+	// 	request.Edge.Direction,
+	// 	request.Edge.From,
+	// 	request.Edge.To,
+	// )
+
 	result := exchangeDomain.OrderResult{
 		Status:          exchangeDomain.OrderStatusFilled,
 		ExchangeOrderID: request.ClientOrderID,
 		ClientOrderID:   request.ClientOrderID,
 
-		ExecutedAmount: step.AmountIn,
-		ReceivedAmount: step.AmountOut,
+		ExecutedAmount: step.ExecutedInput,
+		ReceivedAmount: step.GrossOutput,
 
 		Fee:      step.Fee,
 		FeeAsset: step.FeeAsset,
 	}
 
-	if step.AmountIn.LessThan(request.Amount) {
+	if step.ExecutedInput.LessThan(request.Amount) {
 		result.Status = exchangeDomain.OrderStatusPartiallyFilled
 	}
 

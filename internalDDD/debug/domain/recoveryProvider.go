@@ -26,7 +26,6 @@ func (p *RecoveryProvider) Name() string {
 }
 
 func (p *RecoveryProvider) Snapshot() (string, error) {
-
 	recovery, ok := p.store.Latest()
 
 	if !ok {
@@ -116,7 +115,6 @@ func (p *RecoveryProvider) Snapshot() (string, error) {
 	)
 
 	if recovery.CompletedAt != nil {
-
 		fmt.Fprintf(
 			&builder,
 			"Completed: %s\n",
@@ -133,7 +131,6 @@ func (p *RecoveryProvider) Snapshot() (string, error) {
 	}
 
 	if recovery.Error != "" {
-
 		fmt.Fprintf(
 			&builder,
 			"Error: %s\n",
@@ -145,7 +142,6 @@ func (p *RecoveryProvider) Snapshot() (string, error) {
 }
 
 func (p *RecoveryProvider) Metrics() (any, error) {
-
 	recoveries := p.store.List(1000)
 
 	response := map[string]any{
@@ -157,8 +153,9 @@ func (p *RecoveryProvider) Metrics() (any, error) {
 	}
 
 	var (
-		completed int
-		failed    int
+		completed         int
+		completedResidual int
+		failed            int
 
 		totalAttempts int
 		totalDuration time.Duration
@@ -174,49 +171,50 @@ func (p *RecoveryProvider) Metrics() (any, error) {
 	)
 
 	for _, recovery := range recoveries {
-
 		reasons[string(recovery.Reason)]++
 
 		totalAttempts += len(recovery.Attempts)
 
 		switch recovery.ProcessState {
-
 		case recoveryDomain.RecoveryCompleted:
 			completed++
+
+		case recoveryDomain.RecoveryCompletedWithResidual:
+			completedResidual++
 
 		case recoveryDomain.RecoveryFailed:
 			failed++
 		}
 
 		if recovery.CompletedAt != nil {
-
-			totalDuration +=
-				recovery.CompletedAt.Sub(
-					recovery.StartedAt,
-				)
+			totalDuration += recovery.CompletedAt.Sub(
+				recovery.StartedAt,
+			)
 		}
 
 		for _, attempt := range recovery.Attempts {
+			totalPlansCreated += attempt.PlansCreated
+			totalPlansAttempted += attempt.PlansAttempted
+			totalPlansSucceeded += attempt.PlansSucceeded
+			totalPlansFailed += attempt.PlansFailed
 
-			totalPlansCreated +=
-				attempt.PlansCreated
+			// Последний no-progress attempt у
+			// CompletedWithResidual означает, что
+			// executable plans закончились.
+			//
+			// Это не считаем отдельным "no progress":
+			// Recovery до этого мог успешно изменить state.
+			if !attempt.Changed &&
+				recovery.ProcessState !=
+					recoveryDomain.RecoveryCompletedWithResidual {
 
-			totalPlansAttempted +=
-				attempt.PlansAttempted
-
-			totalPlansSucceeded +=
-				attempt.PlansSucceeded
-
-			totalPlansFailed +=
-				attempt.PlansFailed
-
-			if !attempt.Changed {
 				noProgressAttempts++
 			}
 		}
 	}
 
 	response["completed"] = completed
+	response["completedWithResidual"] = completedResidual
 	response["failed"] = failed
 
 	response["averageAttempts"] =
@@ -227,20 +225,12 @@ func (p *RecoveryProvider) Metrics() (any, error) {
 		totalDuration /
 			time.Duration(len(recoveries))
 
-	response["plansCreated"] =
-		totalPlansCreated
+	response["plansCreated"] = totalPlansCreated
+	response["plansAttempted"] = totalPlansAttempted
+	response["plansSucceeded"] = totalPlansSucceeded
+	response["plansFailed"] = totalPlansFailed
 
-	response["plansAttempted"] =
-		totalPlansAttempted
-
-	response["plansSucceeded"] =
-		totalPlansSucceeded
-
-	response["plansFailed"] =
-		totalPlansFailed
-
-	response["noProgressAttempts"] =
-		noProgressAttempts
+	response["noProgressAttempts"] = noProgressAttempts
 
 	response["reasons"] = reasons
 
@@ -267,7 +257,6 @@ func printAttempt(
 	builder *strings.Builder,
 	attempt recoveryDomain.RecoveryAttemptSnapshot,
 ) {
-
 	fmt.Fprintf(
 		builder,
 		"\nAttempt %d\n",
@@ -310,7 +299,6 @@ func printAttempt(
 	)
 
 	if !attempt.StartedAt.IsZero() {
-
 		fmt.Fprintf(
 			builder,
 			"Started: %s\n",
@@ -319,7 +307,6 @@ func printAttempt(
 	}
 
 	if attempt.CompletedAt != nil {
-
 		fmt.Fprintf(
 			builder,
 			"Completed: %s\n",
@@ -356,7 +343,6 @@ func printAttempt(
 	)
 
 	if attempt.Error != "" {
-
 		fmt.Fprintf(
 			builder,
 			"Error: %s\n",
@@ -369,9 +355,7 @@ func printState(
 	builder *strings.Builder,
 	state recoveryDomain.State,
 ) {
-
 	if len(state) == 0 {
-
 		fmt.Fprintln(
 			builder,
 			"  empty",
@@ -381,7 +365,6 @@ func printState(
 	}
 
 	for asset, amount := range state {
-
 		fmt.Fprintf(
 			builder,
 			"  %s: %s\n",

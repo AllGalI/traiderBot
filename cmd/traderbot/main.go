@@ -19,7 +19,6 @@ import (
 
 	executionApplication "traiderBot/internalDDD/execution/application"
 	executionDomain "traiderBot/internalDDD/execution/domain"
-	executionMemory "traiderBot/internalDDD/execution/infrastructure/memory"
 	executionPaper "traiderBot/internalDDD/execution/infrastructure/paper"
 
 	marketApplication "traiderBot/internalDDD/market/application"
@@ -29,12 +28,14 @@ import (
 	"traiderBot/internalDDD/market/infrastructure/cache"
 
 	recoveryApplication "traiderBot/internalDDD/recovery/application"
-	recoveryMemory "traiderBot/internalDDD/recovery/infrastructure/memory"
 
 	simulationApplication "traiderBot/internalDDD/simulation/application"
 	simulationDomain "traiderBot/internalDDD/simulation/domain"
 	simulationBinance "traiderBot/internalDDD/simulation/infrastructure/binance"
-	simulationMemory "traiderBot/internalDDD/simulation/infrastructure/memory"
+
+	executionFile "traiderBot/internalDDD/execution/infrastructure/file"
+	recoveryFile "traiderBot/internalDDD/recovery/infrastructure/file"
+	simulationFile "traiderBot/internalDDD/simulation/infrastructure/file"
 
 	"github.com/shopspring/decimal"
 )
@@ -184,6 +185,7 @@ func main() {
 	const (
 		depth        = 10
 		symbolsLimit = 30
+		dataDir      = "data"
 	)
 
 	var (
@@ -336,7 +338,7 @@ func main() {
 		marketStructure.Graph,
 	)
 
-	recoverySimulator := recoveryApplication.NewSimulator()
+	recoverySimulator := recoveryApplication.NewSimulator(minLiquidityFillRatio)
 
 	recoveryPlanner := recoveryApplication.NewPlanner(
 		recoveryRouteFinder,
@@ -348,7 +350,17 @@ func main() {
 		orderIDGenerator,
 	)
 
-	recoveryStore := recoveryMemory.NewRecoveryStore(1000)
+	recoveryStore, err := recoveryFile.NewRecoveryStore(
+		dataDir,
+		1000,
+	)
+
+	if err != nil {
+		log.Fatalf(
+			"create recovery store: %v",
+			err,
+		)
+	}
 
 	recoveryService := recoveryApplication.NewRecoveryService(
 		recoveryPlanner,
@@ -360,12 +372,20 @@ func main() {
 		debugDomain.NewRecoveryProvider(
 			recoveryStore,
 		)
-	// -------------------------------------------------------------------------
-	// Execution.
-	// -------------------------------------------------------------------------
+		// -------------------------------------------------------------------------
+		// Execution.
+		// -------------------------------------------------------------------------
 
-	executionStore := executionMemory.NewExecutionStore(1000)
-
+	executionStore, err := executionFile.NewExecutionStore(
+		dataDir,
+		1000,
+	)
+	if err != nil {
+		log.Fatalf(
+			"create execution store: %v",
+			err,
+		)
+	}
 	executionDebugProvider :=
 		debugDomain.NewExecutionProvider(
 			executionStore,
@@ -397,8 +417,16 @@ func main() {
 	// Simulation worker.
 	// -------------------------------------------------------------------------
 
-	opportunityStore := simulationMemory.NewOpportunityStore(1000)
-
+	opportunityStore, err := simulationFile.NewOpportunityStore(
+		dataDir,
+		1000,
+	)
+	if err != nil {
+		log.Fatalf(
+			"create opportunity store: %v",
+			err,
+		)
+	}
 	opportunityDebugProvider :=
 		debugDomain.NewOpportunityProvider(
 			opportunityStore,

@@ -31,7 +31,6 @@ type orderFill struct {
 	CommissionAsset string `json:"commissionAsset"`
 }
 
-
 func toOrderResult(
 	request executionDomain.OrderRequest,
 	response orderResponse,
@@ -82,6 +81,15 @@ func toOrderResult(
 			request.Edge.Direction,
 		)
 	}
+
+	fmt.Printf(
+		"[BINANCE ORDER] symbol=%s side=%s status=%s executedQty=%s cumulativeQuoteQty=%s\n",
+		response.Symbol,
+		response.Side,
+		response.Status,
+		response.ExecutedQty,
+		response.CumulativeQuoteQty,
+	)
 
 	return executionDomain.OrderResult{
 		Status:          status,
