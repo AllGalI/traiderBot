@@ -15,7 +15,7 @@ import (
 )
 
 type ExecutionManager struct {
-	exchangeAdapter  executionDomain.ExchangeAdapter
+	exchangeAdapter  exchangeDomain.Adapter
 	resultMapper     executionDomain.ActualStepResultMapper
 	evaluator        Evaluator
 	orderIDGenerator *exchangeDomain.OrderIDGenerator
@@ -25,11 +25,10 @@ type ExecutionManager struct {
 }
 
 func NewExecutionManager(
-	exchangeAdapter executionDomain.ExchangeAdapter,
+	exchangeAdapter exchangeDomain.Adapter,
 	resultMapper executionDomain.ActualStepResultMapper,
 	evaluator Evaluator,
 	orderIDGenerator *exchangeDomain.OrderIDGenerator,
-	recoveryService recoveryApplication.RecoveryService,
 	executionStore ExecutionStore,
 ) *ExecutionManager {
 	return &ExecutionManager{
@@ -37,7 +36,6 @@ func NewExecutionManager(
 		resultMapper:     resultMapper,
 		evaluator:        evaluator,
 		orderIDGenerator: orderIDGenerator,
-		recoveryService:  recoveryService,
 		executionStore:   executionStore,
 	}
 }
@@ -70,6 +68,8 @@ func (m *ExecutionManager) Execute(
 	}
 
 	steps := m.buildExecutionSteps(opportunity)
+	initialState := m.buildInitialState(opportunity)
+	actualState = recoveryApplication.CloneState(initialState)
 
 	defer func() {
 		if execution == nil {
@@ -87,6 +87,8 @@ func (m *ExecutionManager) Execute(
 		m.failExecution(
 			execution,
 			len(steps),
+			initialState,
+			actualState,
 			err,
 		)
 	}()
@@ -95,11 +97,10 @@ func (m *ExecutionManager) Execute(
 		execution,
 		0,
 		len(steps),
+		initialState,
+		actualState,
 		nil,
 	)
-
-	initialState := m.buildInitialState(opportunity)
-	actualState = recoveryApplication.CloneState(initialState)
 
 	currentAmount := opportunity.ExecutedStartAmount
 
@@ -116,6 +117,8 @@ func (m *ExecutionManager) Execute(
 			execution,
 			step.ID,
 			len(steps),
+			initialState,
+			actualState,
 			nil,
 		)
 
@@ -133,19 +136,13 @@ func (m *ExecutionManager) Execute(
 			return execution, actualState, err
 		}
 
+		startedAt := time.Now()
+
 		result, err := m.exchangeAdapter.Execute(
 			ctx,
 			request,
 		)
-		// fmt.Printf(
-		// 	"[EXECUTION] step=%d order=%s status=%s start amount=%s, executed=%s received=%s\n",
-		// 	step.ID,
-		// 	request.ClientOrderID,
-		// 	result.Status,
-		// 	opportunity.ExecutedStartAmount,
-		// 	result.ExecutedAmount,
-		// 	result.ReceivedAmount,
-		// )
+
 		if err != nil {
 			return execution, actualState, fmt.Errorf(
 				"execute step %d: %w",
@@ -153,6 +150,8 @@ func (m *ExecutionManager) Execute(
 				err,
 			)
 		}
+
+		completedAt := time.Now()
 
 		if err := m.validateOrderResult(result); err != nil {
 			return execution, actualState, fmt.Errorf(
@@ -164,7 +163,8 @@ func (m *ExecutionManager) Execute(
 
 		switch result.Status {
 		case executionDomain.OrderStatusFilled:
-			// Continue below and process the actual result.
+			// Final result is already available.
+			// Continue below and persist the actual step result.
 
 		case executionDomain.OrderStatusPending,
 			executionDomain.OrderStatusUnknown:
@@ -198,61 +198,26 @@ func (m *ExecutionManager) Execute(
 				)
 			}
 
+			result = reconciledResult
+			completedAt = time.Now()
+
 			switch reconciledResult.Status {
 			case executionDomain.OrderStatusFilled:
-				result = reconciledResult
-
 			case executionDomain.OrderStatusPartiallyFilled:
-				actualState = m.applyOrderResult(
-					actualState,
-					step,
-					reconciledResult,
-				)
-
-				return m.startRecovery(
-					ctx,
-					execution,
-					initialState,
-					actualState,
-					marketContext,
-					recoveryDomain.RecoveryReasonPartialFill,
-					fmt.Errorf(
-						"step %d requires recovery: order status %s",
-						step.ID,
-						result.Status,
-					),
-				)
 
 			case executionDomain.OrderStatusRejected:
 
-				return m.startRecovery(
-					ctx,
-					execution,
-					initialState,
-					actualState,
-					marketContext,
-					recoveryDomain.RecoveryReasonRejected,
-					fmt.Errorf(
-						"step %d requires recovery after reconciliation: status %s",
-						step.ID,
-						reconciledResult.Status,
-					),
+				return execution, actualState, fmt.Errorf(
+					"step %d requires recovery after reconciliation: status %s",
+					step.ID,
+					reconciledResult.Status,
 				)
 
 			case executionDomain.OrderStatusCancelled:
-
-				return m.startRecovery(
-					ctx,
-					execution,
-					initialState,
-					actualState,
-					marketContext,
-					recoveryDomain.RecoveryReasonCancelled,
-					fmt.Errorf(
-						"step %d requires recovery after reconciliation: status %s",
-						step.ID,
-						reconciledResult.Status,
-					),
+				return execution, actualState, fmt.Errorf(
+					"step %d requires recovery after reconciliation: status %s",
+					step.ID,
+					reconciledResult.Status,
 				)
 
 			case executionDomain.OrderStatusPending,
@@ -273,57 +238,19 @@ func (m *ExecutionManager) Execute(
 			}
 
 		case executionDomain.OrderStatusPartiallyFilled:
-			actualState = m.applyOrderResult(
-				actualState,
-				step,
-				result,
-			)
-
-			return m.startRecovery(
-				ctx,
-				execution,
-				initialState,
-				actualState,
-				marketContext,
-
-				recoveryDomain.RecoveryReasonPartialFill,
-
-				fmt.Errorf(
-					"step %d requires recovery: order status %s",
-					step.ID,
-					result.Status,
-				),
-			)
 
 		case executionDomain.OrderStatusRejected:
-			return m.startRecovery(
-				ctx,
-				execution,
-				initialState,
-				actualState,
-				marketContext,
-				recoveryDomain.RecoveryReasonRejected,
-				fmt.Errorf(
-					"step %d requires recovery: order status %s",
-					step.ID,
-					result.Status,
-				),
+			return execution, actualState, fmt.Errorf(
+				"step %d requires recovery: order status %s",
+				step.ID,
+				result.Status,
 			)
 
 		case executionDomain.OrderStatusCancelled:
-
-			return m.startRecovery(
-				ctx,
-				execution,
-				initialState,
-				actualState,
-				marketContext,
-				recoveryDomain.RecoveryReasonCancelled,
-				fmt.Errorf(
-					"step %d requires recovery: order status %s",
-					step.ID,
-					result.Status,
-				),
+			return execution, actualState, fmt.Errorf(
+				"step %d requires recovery: order status %s",
+				step.ID,
+				result.Status,
 			)
 
 		default:
@@ -334,11 +261,11 @@ func (m *ExecutionManager) Execute(
 			)
 		}
 
-		completedAt := time.Now()
-
 		actualResult, err := m.resultMapper.Map(
 			step,
+			request,
 			result,
+			startedAt,
 			completedAt,
 		)
 		if err != nil {
@@ -371,29 +298,27 @@ func (m *ExecutionManager) Execute(
 			opportunity.Steps[step.ID],
 			actualResult,
 		)
-		// fmt.Printf(
-		// 	"[EXECUTION] step=%d evaluation decision=%s\n",
-		// 	step.ID,
-		// 	decision,
-		// )
 
 		if err := execution.ApplyDecision(decision); err != nil {
 			return execution, actualState, err
 		}
 
 		if decision == executionDomain.DecisionRecoveryRequired {
-			return m.runRecovery(
-				ctx,
-				execution,
-				initialState,
-				actualState,
-				marketContext,
-				recoveryDomain.RecoveryReasonDeviation,
-				fmt.Errorf(
-					"step %d requires recovery after evaluation",
-					step.ID,
-				),
-			)
+			if err := execution.StartEvaluating(); err != nil {
+				return execution, actualState, err
+			}
+			// 	return m.runRecovery(
+			// 		ctx,
+			// 		execution,
+			// 		initialState,
+			// 		actualState,
+			// 		marketContext,
+			// 		recoveryDomain.RecoveryReasonDeviation,
+			// 		fmt.Errorf(
+			// 			"step %d requires recovery after evaluation",
+			// 			step.ID,
+			// 		),
+			// 	)
 		}
 	}
 
@@ -407,6 +332,8 @@ func (m *ExecutionManager) Execute(
 	if err := m.completeExecution(
 		execution,
 		len(steps),
+		initialState,
+		actualState,
 		nil,
 	); err != nil {
 		return execution, actualState, err
@@ -415,88 +342,90 @@ func (m *ExecutionManager) Execute(
 	return execution, actualState, nil
 }
 
-func (m *ExecutionManager) startRecovery(
-	ctx context.Context,
-	execution *executionDomain.Execution,
-	initialState recoveryDomain.State,
-	actualState recoveryDomain.State,
-	marketContext recoveryApplication.MarketContext,
-	reason recoveryDomain.RecoveryReason,
-	cause error,
-) (*executionDomain.Execution, recoveryDomain.State, error) {
-	if err := execution.StartEvaluating(); err != nil {
-		return execution, actualState, fmt.Errorf(
-			"start recovery evaluation: %w",
-			err,
-		)
-	}
+// func (m *ExecutionManager) startRecovery(
+// 	ctx context.Context,
+// 	execution *executionDomain.Execution,
+// 	initialState recoveryDomain.State,
+// 	actualState recoveryDomain.State,
+// 	marketContext recoveryApplication.MarketContext,
+// 	reason recoveryDomain.RecoveryReason,
+// 	cause error,
+// ) (*executionDomain.Execution, recoveryDomain.State, error) {
+// 	if err := execution.StartEvaluating(); err != nil {
+// 		return execution, actualState, fmt.Errorf(
+// 			"start recovery evaluation: %w",
+// 			err,
+// 		)
+// 	}
 
-	if err := execution.ApplyDecision(
-		executionDomain.DecisionRecoveryRequired,
-	); err != nil {
-		return execution, actualState, fmt.Errorf(
-			"apply recovery decision: %w",
-			err,
-		)
-	}
+// 	if err := execution.ApplyDecision(
+// 		executionDomain.DecisionRecoveryRequired,
+// 	); err != nil {
+// 		return execution, actualState, fmt.Errorf(
+// 			"apply recovery decision: %w",
+// 			err,
+// 		)
+// 	}
 
-	return m.runRecovery(
-		ctx,
-		execution,
-		initialState,
-		actualState,
-		marketContext,
-		reason,
-		cause,
-	)
-}
+// 	return m.runRecovery(
+// 		ctx,
+// 		execution,
+// 		initialState,
+// 		actualState,
+// 		marketContext,
+// 		reason,
+// 		cause,
+// 	)
+// }
 
-func (m *ExecutionManager) runRecovery(
-	ctx context.Context,
-	execution *executionDomain.Execution,
-	initialState recoveryDomain.State,
-	actualState recoveryDomain.State,
-	marketContext recoveryApplication.MarketContext,
-	reason recoveryDomain.RecoveryReason,
-	cause error,
-) (*executionDomain.Execution, recoveryDomain.State, error) {
-	recoveryID := recoveryDomain.NewRecoveryID()
+// func (m *ExecutionManager) runRecovery(
+// 	ctx context.Context,
+// 	execution *executionDomain.Execution,
+// 	initialState recoveryDomain.State,
+// 	actualState recoveryDomain.State,
+// 	marketContext recoveryApplication.MarketContext,
+// 	reason recoveryDomain.RecoveryReason,
+// 	cause error,
+// ) (*executionDomain.Execution, recoveryDomain.State, error) {
+// 	recoveryID := recoveryDomain.NewRecoveryID()
 
-	execution.AttachRecovery(
-		recoveryID,
-	)
+// 	execution.AttachRecovery(
+// 		recoveryID,
+// 	)
 
-	recoveredState, err := m.recoveryService.Recover(
-		ctx,
-		recoveryDomain.RecoveryInput{
-			ExecutionID: execution.ID(),
-			Reason:      reason,
+// 	recoveredState, err := m.recoveryService.Recover(
+// 		ctx,
+// 		recoveryDomain.RecoveryInput{
+// 			ExecutionID: execution.ID(),
+// 			Reason:      reason,
 
-			InitialState: initialState,
-			ActualState:  actualState,
-		},
-		marketContext,
-	)
+// 			InitialState: initialState,
+// 			ActualState:  actualState,
+// 		},
+// 		marketContext,
+// 	)
 
-	if err != nil {
-		return execution, recoveredState, fmt.Errorf(
-			"%w: recovery %s failed: %w",
-			cause,
-			recoveryID,
-			err,
-		)
-	}
+// 	if err != nil {
+// 		return execution, recoveredState, fmt.Errorf(
+// 			"%w: recovery %s failed: %w",
+// 			cause,
+// 			recoveryID,
+// 			err,
+// 		)
+// 	}
 
-	if err := m.completeExecution(
-		execution,
-		len(execution.Opportunity().Route.Edges),
-		nil,
-	); err != nil {
-		return execution, recoveredState, err
-	}
+// 	if err := m.completeExecution(
+// 		execution,
+// 		len(execution.Opportunity().Route.Edges),
+// 		initialState,
+// 		actualState,
+// 		nil,
+// 	); err != nil {
+// 		return execution, recoveredState, err
+// 	}
 
-	return execution, recoveredState, nil
-}
+// 	return execution, recoveredState, nil
+// }
 
 func (m *ExecutionManager) buildInitialState(
 	opportunity simulationDomain.Opportunity,
@@ -505,7 +434,7 @@ func (m *ExecutionManager) buildInitialState(
 
 	startAsset := opportunity.Route.Edges[0].From
 
-	state[startAsset] = opportunity.RequestedStartAmount
+	state[startAsset] = opportunity.ExecutedStartAmount
 
 	return state
 }
@@ -601,6 +530,8 @@ func (m *ExecutionManager) createExecution(
 	execution *executionDomain.Execution,
 	currentStep int,
 	totalSteps int,
+	initialState recoveryDomain.State,
+	actualState recoveryDomain.State,
 	err error,
 ) {
 
@@ -612,8 +543,11 @@ func (m *ExecutionManager) createExecution(
 		execution,
 		currentStep,
 		totalSteps,
+		initialState,
+		actualState,
 		err,
 	)
+
 	snapshot.StartedAt = time.Now()
 
 	_ = m.executionStore.Create(
@@ -625,6 +559,8 @@ func (m *ExecutionManager) snapshot(
 	execution *executionDomain.Execution,
 	currentStep int,
 	totalSteps int,
+	initialState recoveryDomain.State,
+	actualState recoveryDomain.State,
 	err error,
 ) executionDomain.ExecutionSnapshot {
 
@@ -645,7 +581,21 @@ func (m *ExecutionManager) snapshot(
 
 		TotalSteps: totalSteps,
 
-		ActualSteps: len(execution.ActualStepResults()),
+		ActualSteps: len(
+			execution.ActualStepResults(),
+		),
+
+		InitialState: m.buildBalanceSnapshots(
+			initialState,
+		),
+
+		ActualState: m.buildBalanceSnapshots(
+			actualState,
+		),
+
+		Steps: m.buildStepSnapshots(
+			execution.ActualStepResults(),
+		),
 	}
 
 	if err != nil {
@@ -659,6 +609,8 @@ func (m *ExecutionManager) persistExecution(
 	execution *executionDomain.Execution,
 	currentStep int,
 	totalSteps int,
+	initialState recoveryDomain.State,
+	actualState recoveryDomain.State,
 	err error,
 ) {
 
@@ -666,13 +618,14 @@ func (m *ExecutionManager) persistExecution(
 		return
 	}
 
-	snapshot :=
-		m.snapshot(
-			execution,
-			currentStep,
-			totalSteps,
-			err,
-		)
+	snapshot := m.snapshot(
+		execution,
+		currentStep,
+		totalSteps,
+		initialState,
+		actualState,
+		err,
+	)
 
 	_ = m.executionStore.Update(
 		&snapshot,
@@ -682,19 +635,24 @@ func (m *ExecutionManager) persistExecution(
 func (m *ExecutionManager) completeExecution(
 	execution *executionDomain.Execution,
 	totalSteps int,
+	initialState recoveryDomain.State,
+	actualState recoveryDomain.State,
 	err error,
 ) error {
+
 	if err != nil {
 		return m.failExecution(
 			execution,
 			totalSteps,
+			initialState,
+			actualState,
 			err,
 		)
 	}
 
-	if err := execution.Complete(); err != nil {
-		return err
-	}
+	// if err := execution.Complete(); err != nil {
+	// 	return err
+	// }
 
 	if m.executionStore == nil {
 		return nil
@@ -704,6 +662,8 @@ func (m *ExecutionManager) completeExecution(
 		execution,
 		totalSteps,
 		totalSteps,
+		initialState,
+		actualState,
 		nil,
 	)
 
@@ -721,6 +681,8 @@ func (m *ExecutionManager) completeExecution(
 func (m *ExecutionManager) failExecution(
 	execution *executionDomain.Execution,
 	currentStep int,
+	initialState recoveryDomain.State,
+	actualState recoveryDomain.State,
 	err error,
 ) error {
 	if execution == nil {
@@ -750,6 +712,8 @@ func (m *ExecutionManager) failExecution(
 		execution,
 		currentStep,
 		len(execution.Opportunity().Route.Edges),
+		initialState,
+		actualState,
 		err,
 	)
 
@@ -762,4 +726,64 @@ func (m *ExecutionManager) failExecution(
 	)
 
 	return nil
+}
+
+func (m *ExecutionManager) buildStepSnapshots(
+	results []executionDomain.ActualStepResult,
+) []executionDomain.ExecutionStepSnapshot {
+	snapshots := make(
+		[]executionDomain.ExecutionStepSnapshot,
+		0,
+		len(results),
+	)
+
+	for _, result := range results {
+		snapshots = append(
+			snapshots,
+			executionDomain.ExecutionStepSnapshot{
+				StepID: result.StepID,
+
+				PlannedInput:   result.PlannedInput,
+				RequestedInput: result.RequestedInput,
+				ActualInput:    result.ActualInput,
+
+				GrossOutput: result.GrossOutput,
+				Fee:         result.Fee,
+				NetOutput:   result.NetOutput,
+
+				FillRatio: result.FillRatio,
+
+				Result: result.Result,
+				Error:  result.Error,
+
+				StartedAt:   result.StartedAt,
+				CompletedAt: result.CompletedAt,
+			},
+		)
+	}
+
+	return snapshots
+}
+
+func (m *ExecutionManager) buildBalanceSnapshots(
+	state recoveryDomain.State,
+) []executionDomain.BalanceSnapshot {
+
+	snapshots := make(
+		[]executionDomain.BalanceSnapshot,
+		0,
+		len(state),
+	)
+
+	for asset, quantity := range state {
+		snapshots = append(
+			snapshots,
+			executionDomain.BalanceSnapshot{
+				Asset:    asset,
+				Quantity: quantity,
+			},
+		)
+	}
+
+	return snapshots
 }

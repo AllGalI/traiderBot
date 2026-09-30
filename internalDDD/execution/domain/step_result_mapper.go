@@ -3,6 +3,8 @@ package domain
 import (
 	"fmt"
 	"time"
+
+	"github.com/shopspring/decimal"
 )
 
 type ActualStepResultMapper struct{}
@@ -13,7 +15,9 @@ func NewActualStepResultMapper() ActualStepResultMapper {
 
 func (m ActualStepResultMapper) Map(
 	step ExecutionStep,
+	request OrderRequest,
 	result OrderResult,
+	startedAt time.Time,
 	completedAt time.Time,
 ) (ActualStepResult, error) {
 	if step.Edge.From == "" {
@@ -24,7 +28,8 @@ func (m ActualStepResultMapper) Map(
 		return ActualStepResult{}, fmt.Errorf("step destination asset is required")
 	}
 
-	if result.ExecutedAmount.IsNegative() ||
+	if request.Amount.IsNegative() ||
+		result.ExecutedAmount.IsNegative() ||
 		result.ReceivedAmount.IsNegative() ||
 		result.Fee.IsNegative() {
 		return ActualStepResult{}, fmt.Errorf(
@@ -38,8 +43,7 @@ func (m ActualStepResultMapper) Map(
 		)
 	}
 
-	feeAsset := result.FeeAsset
-	if feeAsset == "" {
+	if result.FeeAsset == "" {
 		return ActualStepResult{}, fmt.Errorf(
 			"fee asset is required",
 		)
@@ -47,12 +51,29 @@ func (m ActualStepResultMapper) Map(
 
 	netOutput := result.ReceivedAmount
 
-	if feeAsset == step.Edge.To {
+	if result.FeeAsset == step.Edge.To {
 		netOutput = result.ReceivedAmount.Sub(result.Fee)
+	}
+
+	fillRatio := decimal.Zero
+
+	if request.Amount.GreaterThan(decimal.Zero) {
+		fillRatio = result.ExecutedAmount.Div(request.Amount)
+	}
+
+	if fillRatio.GreaterThan(decimal.NewFromInt(1)) {
+		fillRatio = decimal.NewFromInt(1)
 	}
 
 	return ActualStepResult{
 		StepID: step.ID,
+
+		PlannedInput: step.PlannedInput,
+
+		RequestedInput: AssetAmount{
+			Asset:    step.Edge.From,
+			Quantity: request.Amount,
+		},
 
 		ActualInput: AssetAmount{
 			Asset:    step.Edge.From,
@@ -65,7 +86,7 @@ func (m ActualStepResultMapper) Map(
 		},
 
 		Fee: AssetAmount{
-			Asset:    feeAsset,
+			Asset:    result.FeeAsset,
 			Quantity: result.Fee,
 		},
 
@@ -74,6 +95,11 @@ func (m ActualStepResultMapper) Map(
 			Quantity: netOutput,
 		},
 
+		FillRatio: fillRatio,
+
+		Result: result.Status,
+
+		StartedAt:   startedAt,
 		CompletedAt: completedAt,
 	}, nil
 }

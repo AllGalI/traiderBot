@@ -4,27 +4,21 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/url"
 	"strings"
-	"time"
 
+	binanceRest "traiderBot/internalDDD/exchange/infrastructure/binance/rest"
 	"traiderBot/internalDDD/market/domain"
 )
 
-
 type SymbolProvider struct {
-	client  *http.Client
-	baseURL string
+	client *binanceRest.Client
 }
 
-
-func NewSymbolProvider() *SymbolProvider {
+func NewSymbolProvider(
+	client *binanceRest.Client,
+) *SymbolProvider {
 	return &SymbolProvider{
-		client: &http.Client{
-			Timeout: 10 * time.Second,
-		},
-		baseURL: restBaseURL,
+		client: client,
 	}
 }
 
@@ -32,14 +26,20 @@ func (p *SymbolProvider) Get(
 	ctx context.Context,
 	symbols []string,
 ) ([]domain.Symbol, error) {
+
 	if len(symbols) == 0 {
-		return nil, fmt.Errorf("no symbols provided")
+		return nil, fmt.Errorf(
+			"no symbols provided",
+		)
 	}
 
 	requested := make(map[string]struct{}, len(symbols))
 
 	for _, symbol := range symbols {
-		symbol = strings.ToUpper(strings.TrimSpace(symbol))
+
+		symbol = strings.ToUpper(
+			strings.TrimSpace(symbol),
+		)
 
 		if symbol == "" {
 			continue
@@ -49,136 +49,124 @@ func (p *SymbolProvider) Get(
 	}
 
 	if len(requested) == 0 {
-		return nil, fmt.Errorf("no valid symbols provided")
+		return nil, fmt.Errorf(
+			"no valid symbols provided",
+		)
 	}
 
 	symbolList := make([]string, 0, len(requested))
 
 	for symbol := range requested {
-		symbolList = append(symbolList, symbol)
-	}
-
-	symbolsJSON, err := json.Marshal(symbolList)
-	if err != nil {
-		return nil, fmt.Errorf("encode symbols: %w", err)
-	}
-
-	reqURL := fmt.Sprintf(
-		"%s%s?symbols=%s",
-		p.baseURL,
-		exchangeInfoPath,
-		url.QueryEscape(string(symbolsJSON)),
-	)
-
-	req, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodGet,
-		reqURL,
-		nil,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("request exchange info: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf(
-			"binance returned status %d",
-			resp.StatusCode,
+		symbolList = append(
+			symbolList,
+			symbol,
 		)
 	}
 
-	var dto exchangeInfoDTO
+	symbolsJSON, err := json.Marshal(
+		symbolList,
+	)
 
-	if err := json.NewDecoder(resp.Body).Decode(&dto); err != nil {
+	if err != nil {
 		return nil, fmt.Errorf(
-			"decode exchange info response: %w",
+			"encode symbols: %w",
 			err,
 		)
 	}
 
-	result := make([]domain.Symbol, 0, len(dto.Symbols))
+	body, err := p.client.Request(
+		ctx,
+		"GET",
+		exchangeInfoPath,
+		map[string][]string{
+			"symbols": {
+				string(symbolsJSON),
+			},
+		},
+	)
 
-	for _, symbolDTO := range dto.Symbols {
-		symbolName := strings.ToUpper(symbolDTO.Symbol)
-
-		if _, ok := requested[symbolName]; !ok {
-			continue
-		}
-
-		if symbolDTO.Status != "TRADING" {
-			continue
-		}
-
-		symbol, err := mapSymbol(symbolDTO)
-		if err != nil {
-			return nil, fmt.Errorf(
-				"map symbol %q: %w",
-				symbolDTO.Symbol,
-				err,
-			)
-		}
-
-		result = append(result, symbol)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"request exchange info: %w",
+			err,
+		)
 	}
 
-	return result, nil
+	return p.parseSymbols(
+		body,
+		requested,
+	)
 }
 
 func (p *SymbolProvider) GetSymbols(
 	ctx context.Context,
 ) ([]domain.Symbol, error) {
-	reqURL := fmt.Sprintf(
-		"%s%s",
-		p.baseURL,
-		exchangeInfoPath,
-	)
 
-	req, err := http.NewRequestWithContext(
+	body, err := p.client.Request(
 		ctx,
-		http.MethodGet,
-		reqURL,
+		"GET",
+		exchangeInfoPath,
 		nil,
 	)
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
 
-	resp, err := p.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("request exchange info: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf(
-			"binance returned status %d",
-			resp.StatusCode,
+			"request exchange info: %w",
+			err,
 		)
 	}
 
+	return p.parseSymbols(
+		body,
+		nil,
+	)
+}
+
+func (p *SymbolProvider) parseSymbols(
+	body []byte,
+	requested map[string]struct{},
+) ([]domain.Symbol, error) {
+
 	var dto exchangeInfoDTO
 
-	if err := json.NewDecoder(resp.Body).Decode(&dto); err != nil {
+	if err := json.Unmarshal(
+		body,
+		&dto,
+	); err != nil {
+
 		return nil, fmt.Errorf(
 			"decode exchange info response: %w",
 			err,
 		)
 	}
 
-	result := make([]domain.Symbol, 0, len(dto.Symbols))
+	result := make(
+		[]domain.Symbol,
+		0,
+		len(dto.Symbols),
+	)
 
 	for _, symbolDTO := range dto.Symbols {
+
 		if symbolDTO.Status != "TRADING" {
 			continue
 		}
 
-		symbol, err := mapSymbol(symbolDTO)
+		symbolName := strings.ToUpper(
+			symbolDTO.Symbol,
+		)
+
+		if requested != nil {
+
+			if _, ok := requested[symbolName]; !ok {
+				continue
+			}
+		}
+
+		symbol, err := mapSymbol(
+			symbolDTO,
+		)
+
 		if err != nil {
 			return nil, fmt.Errorf(
 				"map symbol %q: %w",
@@ -187,7 +175,10 @@ func (p *SymbolProvider) GetSymbols(
 			)
 		}
 
-		result = append(result, symbol)
+		result = append(
+			result,
+			symbol,
+		)
 	}
 
 	return result, nil

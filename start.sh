@@ -11,7 +11,7 @@ cd /home/ali/goProjects/tgNotifier/
 go build -o tgn
 
 cd /home/ali/goProjects/crypto-monitor
-go build -o arb-bot
+go build -o arb-bot ./cmd/traderbot
 
 # Копирование
 ssh -p "$port" root@"$ip" "mkdir -p /home/arb /home/notifier"
@@ -19,6 +19,7 @@ scp -P "$port" /home/ali/goProjects/tgNotifier/tgn root@"$ip":/home/notifier/
 scp -P "$port" /home/ali/goProjects/tgNotifier/.env root@"$ip":/home/notifier/
 scp -P "$port" /home/ali/goProjects/crypto-monitor/arb-bot root@"$ip":/home/arb/
 scp -P "$port" /home/ali/goProjects/crypto-monitor/.env root@"$ip":/home/arb/
+scp -P "$port" /home/ali/goProjects/crypto-monitor/freshness.json root@"$ip":/home/arb/
 
 # Запуск в detached screen-сессиях
 ssh -p "$port" root@"$ip" "apt install screen"

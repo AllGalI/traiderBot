@@ -66,9 +66,17 @@ func (s *ExecutionStore) Update(
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.active[string(execution.ID)] = *execution
+	current := *execution
 
-	if execution.CompletedAt != nil {
+	if previous, exists := s.active[string(execution.ID)]; exists {
+		if current.StartedAt.IsZero() {
+			current.StartedAt = previous.StartedAt
+		}
+	}
+
+	s.active[string(execution.ID)] = current
+
+	if current.CompletedAt != nil {
 
 		delete(
 			s.active,
@@ -77,7 +85,7 @@ func (s *ExecutionStore) Update(
 
 		s.history = append(
 			s.history,
-			*execution,
+			current,
 		)
 
 		if len(s.history) > s.limit {

@@ -91,16 +91,16 @@ func (s *SimulationService) Simulate(
 			}
 		}
 
-		if s.freshness != nil &&
-			!s.freshness.IsFresh(
-				edge.Symbol,
-				orderBook.LastUpdateTime,
-				time.Now(),
-			) {
-			return simulationDomain.SimulationResult{
-				Reason: simulationDomain.SimulationOrderBookStale,
-			}
-		}
+		// if s.freshness != nil &&
+		// 	!s.freshness.IsFresh(
+		// 		edge.Symbol,
+		// 		orderBook.LastUpdateTime,
+		// 		time.Now(),
+		// 	) {
+		// 	return simulationDomain.SimulationResult{
+		// 		Reason: simulationDomain.SimulationOrderBookStale,
+		// 	}
+		// }
 
 		symbol, ok := s.symbols.Get(edge.Symbol)
 

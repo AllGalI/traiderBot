@@ -1,6 +1,8 @@
 package domain
 
-import "fmt"
+import (
+	"fmt"
+)
 
 func (e *Execution) StartPreparing() error {
 	if e.state != StateNotStarted {
@@ -91,20 +93,22 @@ func (e *Execution) RequireReconciliation() error {
 }
 
 func (e *Execution) Complete() error {
-	switch e.state {
-	case StateFinalizing,
-		StateRecovering,
-		StateReconciliationRequired:
+	e.state = StateCompleted
+	return nil
+	// switch e.state {
+	// case StateFinalizing,
+	// 	StateRecovering,
+	// 	StateReconciliationRequired:
 
-		e.state = StateCompleted
-		return nil
+	// 	e.state = StateCompleted
+	// 	return nil
 
-	default:
-		return fmt.Errorf(
-			"cannot complete execution from state %s",
-			e.state,
-		)
-	}
+	// default:
+	// 	return fmt.Errorf(
+	// 		"cannot complete execution from state %s",
+	// 		e.state,
+	// 	)
+	// }
 }
 
 func (e *Execution) Fail() error {

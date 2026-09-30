@@ -12,9 +12,10 @@ import (
 )
 
 type Config struct {
-	APIKey    string
-	APISecret string
-	BaseURL   string
+	APIKey     string
+	APISecret  string
+	RESTBaseURL string
+	WSBaseURL   string
 }
 
 func LoadConfig(useTestnet bool) (Config, error) {
@@ -25,16 +26,18 @@ func LoadConfig(useTestnet bool) (Config, error) {
 	if useTestnet {
 		config.APIKey = os.Getenv("TESTNET_API_KEY")
 		config.APISecret = os.Getenv("TESTNET_SECRET_KEY")
-		config.BaseURL = "https://testnet.binance.vision"
+		config.RESTBaseURL = "https://testnet.binance.vision"
+		config.WSBaseURL = "wss://stream.testnet.binance.vision:9443"
 	} else {
 		config.APIKey = os.Getenv("API_KEY")
 		config.APISecret = os.Getenv("SECRET_KEY")
-		config.BaseURL = "https://api.binance.com"
+		config.RESTBaseURL = "https://api.binance.com"
+		config.WSBaseURL = "wss://stream.binance.com:9443"
 	}
 
 	if config.APIKey == "" {
 		return Config{}, fmt.Errorf(
-			"binance api key is not configured",
+			"binance api key is not configured221",
 		)
 	}
 
@@ -53,7 +56,7 @@ func NewHTTPClient() *http.Client {
 	}
 }
 
-func decodeJSON[T any](
+func DecodeJSON[T any](
 	body []byte,
 ) (T, error) {
 	var result T

@@ -15,9 +15,6 @@ type ExecutionStep struct {
 	// PlannedInput — объём входного актива,
 	// который Simulation первоначально рассчитала
 	// как исполнимый для этого шага.
-	//
-	// Используется Execution для сравнения
-	// плановой и фактической исполнимости.
 	PlannedInput AssetAmount
 }
 
@@ -28,6 +25,14 @@ type AssetAmount struct {
 
 type ActualStepResult struct {
 	StepID int
+
+	// PlannedInput — фактическая копия планового
+	// входного объёма из Simulation.
+	PlannedInput AssetAmount
+
+	// RequestedInput — объём, который Execution
+	// запросила у Executor.
+	RequestedInput AssetAmount
 
 	// ActualInput — фактически исполненный
 	// входной объём до комиссии.
@@ -44,5 +49,16 @@ type ActualStepResult struct {
 	// выходной объём после комиссии.
 	NetOutput AssetAmount
 
+	// FillRatio — отношение фактически исполненного
+	// входного объёма к запрошенному.
+	FillRatio decimal.Decimal
+
+	// Result — итоговый статус ордера.
+	Result OrderStatus
+
+	// Error — ошибка, если шаг завершился ошибкой.
+	Error string
+
+	StartedAt   time.Time
 	CompletedAt time.Time
 }

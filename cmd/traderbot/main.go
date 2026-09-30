@@ -16,10 +16,12 @@ import (
 	"traiderBot/internalDDD/debug/infrastructure/console"
 
 	exchangeDomain "traiderBot/internalDDD/exchange/domain"
+	exchangeBinance "traiderBot/internalDDD/exchange/infrastructure/binance"
+	binanceRest "traiderBot/internalDDD/exchange/infrastructure/binance/rest"
+	binanceWS "traiderBot/internalDDD/exchange/infrastructure/binance/ws"
 
 	executionApplication "traiderBot/internalDDD/execution/application"
 	executionDomain "traiderBot/internalDDD/execution/domain"
-	executionPaper "traiderBot/internalDDD/execution/infrastructure/paper"
 
 	marketApplication "traiderBot/internalDDD/market/application"
 	marketDomain "traiderBot/internalDDD/market/domain"
@@ -34,7 +36,6 @@ import (
 	simulationBinance "traiderBot/internalDDD/simulation/infrastructure/binance"
 
 	executionFile "traiderBot/internalDDD/execution/infrastructure/file"
-	recoveryFile "traiderBot/internalDDD/recovery/infrastructure/file"
 	simulationFile "traiderBot/internalDDD/simulation/infrastructure/file"
 
 	"github.com/shopspring/decimal"
@@ -183,24 +184,55 @@ func main() {
 	defer stop()
 
 	const (
-		depth        = 10
+		depth = 10
+		// symbolsLimit = 150
 		symbolsLimit = 30
 		dataDir      = "data"
 	)
 
 	var (
-		minLiquidityFillRatio = decimal.RequireFromString("0.90")
-		// minProfitPct          = decimal.RequireFromString("0.001")
+		minLiquidityFillRatio = decimal.RequireFromString("0.40")
+		// minLiquidityFillRatio = decimal.RequireFromString("0.90")
+		// minProfitPct          = decimal.RequireFromString("0.0008")
 		minProfitPct = decimal.RequireFromString("-0.003")
 		startAmount  = decimal.RequireFromString("100")
 		maxDeviation = decimal.RequireFromString("0.003")
 	)
 
 	// -------------------------------------------------------------------------
+	// Binance Config and Clients
+	// -------------------------------------------------------------------------
+	cfg, err := exchangeBinance.LoadConfig(true)
+	if err != nil {
+		log.Fatalf("load binance config: %v", err)
+	}
+
+	httpClient := exchangeBinance.NewHTTPClient()
+
+	binanceRestClient, err := binanceRest.NewClient(cfg, httpClient)
+	if err != nil {
+		log.Fatalf("create binance REST client: %v", err)
+	}
+
+	wsClient := binanceWS.NewClient(cfg)
+
+	orderIDGenerator := exchangeDomain.NewOrderIDGenerator()
+
+	body, err := binanceRestClient.GetAccount(ctx)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Println(string(body))
+
+	os.Exit(1)
+
+	// -------------------------------------------------------------------------
 	// Market structure.
 	// -------------------------------------------------------------------------
 
-	symbolProvider := marketBinance.NewSymbolProvider()
+	symbolProvider := marketBinance.NewSymbolProvider(binanceRestClient)
 
 	marketStructureService := marketApplication.NewMarketStructureService(
 		symbolProvider,
@@ -214,7 +246,7 @@ func main() {
 	// -------------------------------------------------------------------------
 
 	orderBookProvider := marketBinance.NewOrderBookProvider()
-	orderBookStream := marketBinance.NewOrderBookStream()
+	orderBookStream := marketBinance.NewOrderBookStream(wsClient)
 	orderBookStore := infrastructure.NewOrderBookStore()
 
 	orderBookDebugProvider := debugDomain.NewOrderBookProvider(
@@ -241,7 +273,7 @@ func main() {
 	// -------------------------------------------------------------------------
 
 	freshnessConfig, err := simulationApplication.LoadFreshnessConfig(
-		"internalDDD/simulation/config/freshness.json",
+		"freshness.json",
 	)
 	if err != nil {
 		log.Fatalf(
@@ -252,7 +284,7 @@ func main() {
 
 	freshnessPolicy := freshnessConfig.NewPolicy()
 
-	feeLoader := simulationBinance.NewFeeProvider()
+	feeLoader := simulationBinance.NewFeeProvider(binanceRestClient)
 
 	feeCache := simulationApplication.NewFeeCache()
 
@@ -317,64 +349,23 @@ func main() {
 	}
 
 	// -------------------------------------------------------------------------
-	// Recovery.
+	// Exchange
 	// -------------------------------------------------------------------------
 
-	marketStructure, ok := marketStructureStore.Get()
-	if !ok || marketStructure == nil {
-		log.Fatal("market structure is not available after market service became ready")
-	}
-
-	orderIDGenerator := exchangeDomain.NewOrderIDGenerator()
-
-	paperExecutor := executionPaper.NewExecutor(
-		orderBookStore,
-		symbolReader,
-		feeCache,
-		minLiquidityFillRatio,
-	)
-
-	recoveryRouteFinder := recoveryApplication.NewRouteFinder(
-		marketStructure.Graph,
-	)
-
-	recoverySimulator := recoveryApplication.NewSimulator(minLiquidityFillRatio)
-
-	recoveryPlanner := recoveryApplication.NewPlanner(
-		recoveryRouteFinder,
-		recoverySimulator,
-	)
-
-	recoveryExecutor := recoveryApplication.NewExecutor(
-		paperExecutor,
-		orderIDGenerator,
-	)
-
-	recoveryStore, err := recoveryFile.NewRecoveryStore(
-		dataDir,
-		1000,
-	)
+	// paperExecutor := executionPaper.NewExecutor(
+	// 	orderBookStore,
+	// 	symbolReader,
+	// 	feeCache,
+	// 	minLiquidityFillRatio,
+	// )
 
 	if err != nil {
-		log.Fatalf(
-			"create recovery store: %v",
-			err,
-		)
+		log.Fatal(err)
 	}
 
-	recoveryService := recoveryApplication.NewRecoveryService(
-		recoveryPlanner,
-		recoveryExecutor,
-		recoveryStore,
-	)
-
-	recoveryDebugProvider :=
-		debugDomain.NewRecoveryProvider(
-			recoveryStore,
-		)
-		// -------------------------------------------------------------------------
-		// Execution.
-		// -------------------------------------------------------------------------
+	// -------------------------------------------------------------------------
+	// Execution.
+	// -------------------------------------------------------------------------
 
 	executionStore, err := executionFile.NewExecutionStore(
 		dataDir,
@@ -398,11 +389,10 @@ func main() {
 	resultMapper := executionDomain.NewActualStepResultMapper()
 
 	executionManager := executionApplication.NewExecutionManager(
-		paperExecutor,
+		binanceRestClient,
 		resultMapper,
 		evaluator,
 		orderIDGenerator,
-		recoveryService,
 		executionStore,
 	)
 
@@ -460,7 +450,6 @@ func main() {
 	debugService.Register(simulationDebugProvider)
 	debugService.Register(opportunityDebugProvider)
 	debugService.Register(executionDebugProvider)
-	debugService.Register(recoveryDebugProvider)
 
 	consoleHandler := console.NewHandler(
 		debugService,

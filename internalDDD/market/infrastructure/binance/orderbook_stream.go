@@ -4,20 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
-	"time"
 
-	"github.com/gorilla/websocket"
-
+	"traiderBot/internalDDD/exchange/infrastructure/binance/ws"
 	"traiderBot/internalDDD/market/application"
 )
 
 type OrderBookStream struct {
+	client *ws.Client
 }
 
-func NewOrderBookStream() *OrderBookStream {
-	return &OrderBookStream{}
+func NewOrderBookStream(client *ws.Client) *OrderBookStream {
+	return &OrderBookStream{
+		client: client,
+	}
 }
 
 func (s *OrderBookStream) Subscribe(
@@ -27,20 +27,26 @@ func (s *OrderBookStream) Subscribe(
 	handler application.OrderBookUpdateHandler,
 ) error {
 	if len(symbols) == 0 {
-		return fmt.Errorf("no symbols provided")
+		return fmt.Errorf("symbols are empty")
 	}
 
 	if handler == nil {
-		return fmt.Errorf("update handler is nil")
+		return fmt.Errorf("order book handler is nil")
 	}
 
 	if depth != 5 && depth != 10 && depth != 20 {
 		return fmt.Errorf("unsupported order book depth: %d", depth)
 	}
 
-	url := buildWebSocketURL(symbols, depth)
+	url := s.buildWebSocketURL(symbols, depth)
 
-	return s.connectAndListen(ctx, url, handler)
+	conn, err := s.client.Connect(ctx, url)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	return s.listen(ctx, conn, handler)
 }
 
 type combinedEventDTO struct {
@@ -48,7 +54,10 @@ type combinedEventDTO struct {
 	Data   json.RawMessage `json:"data"`
 }
 
-func buildWebSocketURL(symbols []string, depth int) string {
+func (s *OrderBookStream) buildWebSocketURL(
+	symbols []string,
+	depth int,
+) string {
 	streams := make([]string, 0, len(symbols))
 
 	for _, symbol := range symbols {
@@ -64,32 +73,16 @@ func buildWebSocketURL(symbols []string, depth int) string {
 
 	return fmt.Sprintf(
 		"%s/stream?streams=%s",
-		wsBaseURL,
+		s.client.BaseURL(),
 		strings.Join(streams, "/"),
 	)
 }
 
-func (s *OrderBookStream) connectAndListen(
+func (s *OrderBookStream) listen(
 	ctx context.Context,
-	url string,
+	conn *ws.Conn,
 	handler application.OrderBookUpdateHandler,
 ) error {
-	dialer := websocket.Dialer{
-		HandshakeTimeout: 10 * time.Second,
-	}
-
-	log.Printf("WebSocket: dialing %s", url)
-
-	conn, _, err := dialer.DialContext(ctx, url, nil)
-
-	if err != nil {
-		return fmt.Errorf("dial websocket: %w", err)
-	}
-
-	log.Println("WebSocket: connected")
-
-	defer conn.Close()
-
 	for {
 		select {
 		case <-ctx.Done():
@@ -97,54 +90,55 @@ func (s *OrderBookStream) connectAndListen(
 		default:
 		}
 
-		_, message, err := conn.ReadMessage()
+		message, err := conn.ReadMessage()
 		if err != nil {
+			select {
+			case <-ctx.Done():
+				return nil
+			default:
+			}
+
 			return fmt.Errorf("read websocket message: %w", err)
 		}
 
 		var event combinedEventDTO
 
 		if err := json.Unmarshal(message, &event); err != nil {
-			return fmt.Errorf("decode combined event: %w", err)
+			return fmt.Errorf("decode websocket event: %w", err)
 		}
 
 		symbol, err := symbolFromStream(event.Stream)
 		if err != nil {
-			return fmt.Errorf("parse stream symbol: %w", err)
+			return err
 		}
 
-		var dto orderBookDTO
+		var orderBook orderBookDTO
 
-		if err := json.Unmarshal(event.Data, &dto); err != nil {
+		if err := json.Unmarshal(event.Data, &orderBook); err != nil {
 			return fmt.Errorf(
-				"decode order book update for %s: %w",
+				"decode order book event for %s: %w",
 				symbol,
 				err,
 			)
 		}
 
-		orderBook, err := mapOrderBook(dto, symbol)
+		result, err := mapOrderBook(orderBook, symbol)
 		if err != nil {
 			return fmt.Errorf(
-				"map order book update for %s: %w",
+				"map order book for %s: %w",
 				symbol,
 				err,
 			)
 		}
 
-		handler(orderBook)
+		handler(result)
 	}
 }
 
 func symbolFromStream(stream string) (string, error) {
-	if stream == "" {
-		return "", fmt.Errorf("empty stream")
-	}
-
 	parts := strings.Split(stream, "@")
-
-	if len(parts) < 2 || parts[0] == "" {
-		return "", fmt.Errorf("invalid stream: %q", stream)
+	if len(parts) == 0 || parts[0] == "" {
+		return "", fmt.Errorf("invalid websocket stream: %q", stream)
 	}
 
 	return strings.ToUpper(parts[0]), nil

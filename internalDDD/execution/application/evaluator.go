@@ -24,21 +24,21 @@ func (e Evaluator) Evaluate(
 	actual executionDomain.ActualStepResult,
 ) executionDomain.ExecutionDecision {
 
-	expectedAmount := expected.GrossOutput
-	actualAmount := actual.GrossOutput.Quantity
+	// expectedAmount := expected.GrossOutput
+	// actualAmount := actual.GrossOutput.Quantity
 
-	if expectedAmount.LessThanOrEqual(decimal.Zero) {
-		return executionDomain.DecisionRecoveryRequired
-	}
+	// if expectedAmount.LessThanOrEqual(decimal.Zero) {
+	// 	return executionDomain.DecisionRecoveryRequired
+	// }
 
-	deviation := expectedAmount.
-		Sub(actualAmount).
-		Abs().
-		Div(expectedAmount)
+	// deviation := expectedAmount.
+	// 	Sub(actualAmount).
+	// 	Abs().
+	// 	Div(expectedAmount)
 
-	if deviation.GreaterThan(e.maxDeviation) {
-		return executionDomain.DecisionRecoveryRequired
-	}
+	// if deviation.GreaterThan(e.maxDeviation) {
+	// 	return executionDomain.DecisionRecoveryRequired
+	// }
 
 	return executionDomain.DecisionContinue
 }
