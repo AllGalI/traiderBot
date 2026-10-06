@@ -28,9 +28,13 @@ func NewFeeRefreshWorker(
 }
 
 func (w *FeeRefreshWorker) Run(ctx context.Context) error {
-	if err := w.refresh(ctx); err != nil {
-		log.Printf("initial fee refresh failed: %v", err)
+	if err := w.Refresh(ctx); err != nil {
+		log.Printf(
+			"initial fee refresh failed: %v",
+			err,
+		)
 	}
+
 	ticker := time.NewTicker(w.interval)
 	defer ticker.Stop()
 
@@ -40,14 +44,17 @@ func (w *FeeRefreshWorker) Run(ctx context.Context) error {
 			return ctx.Err()
 
 		case <-ticker.C:
-			if err := w.refresh(ctx); err != nil {
-				log.Printf("fee refresh failed: %v", err)
+			if err := w.Refresh(ctx); err != nil {
+				log.Printf(
+					"fee refresh failed: %v",
+					err,
+				)
 			}
 		}
 	}
 }
 
-func (w *FeeRefreshWorker) refresh(
+func (w *FeeRefreshWorker) Refresh(
 	ctx context.Context,
 ) error {
 	structure, ok := w.marketStructure.Get()

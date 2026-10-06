@@ -21,11 +21,15 @@ func (m ActualStepResultMapper) Map(
 	completedAt time.Time,
 ) (ActualStepResult, error) {
 	if step.Edge.From == "" {
-		return ActualStepResult{}, fmt.Errorf("step source asset is required")
+		return ActualStepResult{}, fmt.Errorf(
+			"step source asset is required",
+		)
 	}
 
 	if step.Edge.To == "" {
-		return ActualStepResult{}, fmt.Errorf("step destination asset is required")
+		return ActualStepResult{}, fmt.Errorf(
+			"step destination asset is required",
+		)
 	}
 
 	if request.Amount.IsNegative() ||
@@ -43,9 +47,9 @@ func (m ActualStepResultMapper) Map(
 		)
 	}
 
-	if result.FeeAsset == "" {
+	if !result.Fee.IsZero() && result.FeeAsset == "" {
 		return ActualStepResult{}, fmt.Errorf(
-			"fee asset is required",
+			"fee asset is required when fee is non-zero",
 		)
 	}
 

@@ -21,6 +21,7 @@ import (
 	binanceWS "traiderBot/internalDDD/exchange/infrastructure/binance/ws"
 
 	executionApplication "traiderBot/internalDDD/execution/application"
+	executionManager "traiderBot/internalDDD/execution/application/execution_manager"
 	executionDomain "traiderBot/internalDDD/execution/domain"
 
 	marketApplication "traiderBot/internalDDD/market/application"
@@ -38,11 +39,14 @@ import (
 	executionFile "traiderBot/internalDDD/execution/infrastructure/file"
 	simulationFile "traiderBot/internalDDD/simulation/infrastructure/file"
 
+	balanceApplication "traiderBot/internalDDD/balance/application"
+	balanceBinance "traiderBot/internalDDD/balance/infrastructure"
+
 	"github.com/shopspring/decimal"
 )
 
 type executionOpportunityHandler struct {
-	manager              *executionApplication.ExecutionManager
+	manager              *executionManager.ExecutionManager
 	marketStructureStore marketApplication.MarketStructureStore
 	orderBookStore       *infrastructure.OrderBookStore
 	feeCache             *simulationApplication.FeeCache
@@ -50,6 +54,7 @@ type executionOpportunityHandler struct {
 
 func (h *executionOpportunityHandler) Handle(
 	opportunity *simulationDomain.Opportunity,
+
 ) {
 	if opportunity == nil {
 		log.Println("execution: received nil opportunity")
@@ -73,7 +78,6 @@ func (h *executionOpportunityHandler) Handle(
 		return
 	}
 
-	// execution, actualState, err := h.manager.Execute(
 	execution, _, err := h.manager.Execute(
 		context.Background(),
 		*opportunity,
@@ -102,16 +106,6 @@ func (h *executionOpportunityHandler) Handle(
 		return
 	}
 
-	// log.Printf(
-	// 	"EXECUTION: state=%s actualStepResults=%d",
-	// 	execution.State(),
-	// 	len(execution.ActualStepResults()),
-	// )
-
-	// log.Printf(
-	// 	"EXECUTION STATE: %+v",
-	// 	actualState,
-	// )
 }
 func (h *executionOpportunityHandler) buildMarketContext() (
 	recoveryApplication.MarketContext,
@@ -191,11 +185,12 @@ func main() {
 	)
 
 	var (
-		minLiquidityFillRatio = decimal.RequireFromString("0.40")
-		// minLiquidityFillRatio = decimal.RequireFromString("0.90")
-		// minProfitPct          = decimal.RequireFromString("0.0008")
-		minProfitPct = decimal.RequireFromString("-0.003")
-		startAmount  = decimal.RequireFromString("100")
+		// minLiquidityFillRatio = decimal.RequireFromString("0.60")
+		minLiquidityFillRatio = decimal.RequireFromString("0.90")
+		minProfitPct          = decimal.RequireFromString("0.0008")
+		// minProfitPct = decimal.RequireFromString("-0.001")
+		startAmount = decimal.RequireFromString("100")
+		// startAmount  = decimal.RequireFromString("30")
 		maxDeviation = decimal.RequireFromString("0.003")
 	)
 
@@ -218,15 +213,34 @@ func main() {
 
 	orderIDGenerator := exchangeDomain.NewOrderIDGenerator()
 
-	body, err := binanceRestClient.GetAccount(ctx)
+	// -------------------------------------------------------------------------
+	// Balance.
+	// -------------------------------------------------------------------------
 
-	if err != nil {
-		log.Fatal(err)
+	balanceProvider := balanceBinance.NewBinanceBalanceProvider(
+		binanceRestClient,
+	)
+
+	balanceService := balanceApplication.NewBalanceService(
+		balanceProvider,
+	)
+
+	balanceService.StartAutoRefresh(
+		ctx,
+		30*time.Second,
+	)
+
+	if err := balanceService.Refresh(ctx); err != nil {
+		log.Fatalf(
+			"refresh account balances: %v",
+			err,
+		)
 	}
 
-	fmt.Println(string(body))
-
-	os.Exit(1)
+	log.Printf(
+		"account balance loaded: USDT available=%s",
+		balanceService.Available("USDT"),
+	)
 
 	// -------------------------------------------------------------------------
 	// Market structure.
@@ -359,9 +373,9 @@ func main() {
 	// 	minLiquidityFillRatio,
 	// )
 
-	if err != nil {
-		log.Fatal(err)
-	}
+	// if err != nil {
+	// 	log.Fatal(err)
+	// }
 
 	// -------------------------------------------------------------------------
 	// Execution.
@@ -388,12 +402,13 @@ func main() {
 
 	resultMapper := executionDomain.NewActualStepResultMapper()
 
-	executionManager := executionApplication.NewExecutionManager(
+	executionManager := executionManager.NewExecutionManager(
 		binanceRestClient,
 		resultMapper,
 		evaluator,
 		orderIDGenerator,
 		executionStore,
+		balanceService,
 	)
 
 	opportunityHandler := &executionOpportunityHandler{
@@ -435,6 +450,21 @@ func main() {
 		simulationWorker.Metrics(),
 	)
 
+	// // -------------------------------------------------------------------------
+	// // Tg bot
+	// // -------------------------------------------------------------------------
+	// telegramBot, err := telegramInfrastructure.NewBot(
+	// 	balanceService,
+	// 	executionStore,
+	// 	opportunityStore,
+	// )
+	// if err != nil {
+	// 	log.Fatalf(
+	// 		"create telegram bot: %v",
+	// 		err,
+	// 	)
+	// }
+
 	// -------------------------------------------------------------------------
 	// Debug / console.
 	// -------------------------------------------------------------------------
@@ -444,6 +474,9 @@ func main() {
 	graphProvider := debugDomain.NewGraphProvider(
 		marketStructureStore,
 	)
+
+	balanceDebugProvider := debugDomain.NewBalanceProvider(balanceService)
+	debugService.Register(balanceDebugProvider)
 
 	debugService.Register(graphProvider)
 	debugService.Register(orderBookDebugProvider)
@@ -461,6 +494,25 @@ func main() {
 		os.Stdin,
 		os.Stdout,
 	)
+
+	// debugMux := http.NewServeMux()
+
+	// debugHandler := debugHTTP.NewHandler(debugService)
+	// debugHandler.RegisterRoutes(debugMux)
+
+	// debugServer := debugHTTP.NewServer(
+	// 	"127.0.0.1:8080",
+	// 	debugMux,
+	// )
+
+	// go func() {
+	// 	if err := debugServer.Run(ctx); err != nil {
+	// 		log.Printf(
+	// 			"debug HTTP server stopped: %v",
+	// 			err,
+	// 		)
+	// 	}
+	// }()
 
 	// -------------------------------------------------------------------------
 	// Fee refresh worker.
@@ -516,6 +568,26 @@ func main() {
 			stop()
 		}
 	}()
+
+	// -------------------------------------------------------------------------
+	// tg
+	// -------------------------------------------------------------------------
+
+	// go func() {
+	// 	if err := telegramBot.Run(ctx); err != nil {
+	// 		if ctx.Err() != nil {
+	// 			log.Println("telegram bot stopped")
+	// 			return
+	// 		}
+
+	// 		log.Printf(
+	// 			"telegram bot failed: %v",
+	// 			err,
+	// 		)
+
+	// 		stop()
+	// 	}
+	// }()
 
 	// -------------------------------------------------------------------------
 	// Wait for shutdown.

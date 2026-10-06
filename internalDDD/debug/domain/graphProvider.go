@@ -1,19 +1,18 @@
 package domain
 
 import (
-	"encoding/json"
 	"fmt"
 
-	"traiderBot/internalDDD/market/application"
+	marketApplication "traiderBot/internalDDD/market/application"
 	marketDomain "traiderBot/internalDDD/market/domain"
 )
 
 type GraphProvider struct {
-	structureStore application.MarketStructureStore
+	structureStore marketApplication.MarketStructureStore
 }
 
 func NewGraphProvider(
-	structureStore application.MarketStructureStore,
+	structureStore marketApplication.MarketStructureStore,
 ) *GraphProvider {
 	return &GraphProvider{
 		structureStore: structureStore,
@@ -24,31 +23,23 @@ func (p *GraphProvider) Name() string {
 	return "GraphProvider"
 }
 
-func (p *GraphProvider) Snapshot() (string, error) {
+func (p *GraphProvider) Snapshot() (any, error) {
 	structure, ok := p.structureStore.Get()
+
 	if !ok {
-		return "", fmt.Errorf(
+		return nil, fmt.Errorf(
 			"market structure is not available",
 		)
 	}
 
-	data, err := json.MarshalIndent(
-		structure.Graph,
-		"",
-		"    ",
-	)
-	if err != nil {
-		return "", fmt.Errorf(
-			"encode graph: %w",
-			err,
-		)
-	}
-
-	return string(data), nil
+	return map[string]any{
+		"assets": structure.Graph,
+	}, nil
 }
 
 func (p *GraphProvider) Metrics() (any, error) {
 	structure, ok := p.structureStore.Get()
+
 	if !ok {
 		return nil, fmt.Errorf(
 			"market structure is not available",
@@ -68,7 +59,7 @@ func graphMetrics(
 	}
 
 	return map[string]int{
-		"EdgesCount":  edgesCount,
-		"AssetsCount": len(*graph),
+		"edgesCount":  edgesCount,
+		"assetsCount": len(*graph),
 	}
 }

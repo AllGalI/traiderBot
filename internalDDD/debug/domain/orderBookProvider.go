@@ -1,10 +1,7 @@
 package domain
 
 import (
-	"fmt"
-	"strings"
 	"time"
-
 	marketDomain "traiderBot/internalDDD/market/domain"
 )
 
@@ -29,94 +26,66 @@ func (p *OrderBookProvider) Name() string {
 	return "OrderBookProvider"
 }
 
-func (p *OrderBookProvider) Snapshot() (string, error) {
+func (p *OrderBookProvider) Snapshot() (any, error) {
 	symbols := p.store.Symbols()
 
-	if len(symbols) == 0 {
-		return "No order books loaded.", nil
+	result := map[string]any{
+		"symbols": len(symbols),
 	}
 
-	var builder strings.Builder
-
-	fmt.Fprintf(
-		&builder,
-		"Order books: %d\n\n",
-		len(symbols),
-	)
+	books := make([]any, 0, len(symbols))
 
 	for _, symbol := range symbols {
 		orderBook, ok := p.store.Get(symbol)
+
 		if !ok {
 			continue
 		}
 
-		fmt.Fprintf(
-			&builder,
-			"%s\n",
-			symbol,
-		)
-
-		fmt.Fprintf(
-			&builder,
-			"  LastUpdateID: %d\n",
-			orderBook.LastUpdateID,
-		)
-
-		fmt.Fprintf(
-			&builder,
-			"  LastUpdateTime: %s\n",
-			formatTime(orderBook.LastUpdateTime),
-		)
-
-		fmt.Fprintf(
-			&builder,
-			"  Bids: %d\n",
-			len(orderBook.Bids),
-		)
-
-		fmt.Fprintf(
-			&builder,
-			"  Asks: %d\n",
-			len(orderBook.Asks),
-		)
+		book := map[string]any{
+			"symbol":         symbol,
+			"lastUpdateID":   orderBook.LastUpdateID,
+			"lastUpdateTime": formatTime(orderBook.LastUpdateTime),
+			"bids":           len(orderBook.Bids),
+			"asks":           len(orderBook.Asks),
+		}
 
 		if len(orderBook.Bids) > 0 {
-			fmt.Fprintf(
-				&builder,
-				"  BestBid: %s @ %s\n",
-				orderBook.Bids[0].Qty,
-				orderBook.Bids[0].Price,
-			)
+			book["bestBid"] = map[string]any{
+				"quantity": orderBook.Bids[0].Qty,
+				"price":    orderBook.Bids[0].Price,
+			}
 		}
 
 		if len(orderBook.Asks) > 0 {
-			fmt.Fprintf(
-				&builder,
-				"  BestAsk: %s @ %s\n",
-				orderBook.Asks[0].Qty,
-				orderBook.Asks[0].Price,
-			)
+			book["bestAsk"] = map[string]any{
+				"quantity": orderBook.Asks[0].Qty,
+				"price":    orderBook.Asks[0].Price,
+			}
 		}
 
-		fmt.Fprintln(&builder)
+		books = append(books, book)
 	}
 
-	return builder.String(), nil
+	result["orderBooks"] = books
+
+	return result, nil
 }
 
 func (p *OrderBookProvider) Metrics() (any, error) {
 	symbols := p.store.Symbols()
 
 	metrics := map[string]any{
-		"symbols":     len(symbols),
-		"orderBooks":  len(symbols),
-		"bySymbol":    make(map[string]any),
+		"symbols":    len(symbols),
+		"orderBooks": len(symbols),
+		"bySymbol":   make(map[string]any),
 	}
 
 	bySymbol := metrics["bySymbol"].(map[string]any)
 
 	for _, symbol := range symbols {
 		orderBook, ok := p.store.Get(symbol)
+
 		if !ok {
 			continue
 		}
@@ -131,14 +100,6 @@ func (p *OrderBookProvider) Metrics() (any, error) {
 	}
 
 	return metrics, nil
-}
-
-func formatTime(value time.Time) string {
-	if value.IsZero() {
-		return ""
-	}
-
-	return value.Format(time.RFC3339Nano)
 }
 
 func orderBookAge(value time.Time) string {

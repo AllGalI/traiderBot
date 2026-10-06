@@ -33,8 +33,13 @@ func NewRecoveryService(
 func (s RecoveryService) Recover(
 	ctx context.Context,
 	input recoveryDomain.RecoveryInput,
+	targetAsset string,
 	marketContext MarketContext,
 ) (recoveryDomain.State, error) {
+	if targetAsset == "" {
+		return nil, fmt.Errorf("recovery target asset is required")
+	}
+
 	actualState := CloneState(input.ActualState)
 
 	now := time.Now()
@@ -99,6 +104,7 @@ func (s RecoveryService) Recover(
 
 		plans := s.planner.CreatePlan(
 			currentInput,
+			targetAsset,
 			marketContext,
 		)
 
@@ -117,7 +123,7 @@ func (s RecoveryService) Recover(
 
 			if hasRecoverableAssets(
 				actualState,
-				targetAssetFromState(input.InitialState),
+				targetAsset,
 			) {
 				snapshot.ProcessState =
 					recoveryDomain.RecoveryCompletedWithResidual
@@ -283,18 +289,6 @@ func stateChanged(
 	}
 
 	return false
-}
-
-func targetAssetFromState(
-	initialState recoveryDomain.State,
-) string {
-	for asset, amount := range initialState {
-		if amount.GreaterThan(decimal.Zero) {
-			return asset
-		}
-	}
-
-	return ""
 }
 
 func hasRecoverableAssets(

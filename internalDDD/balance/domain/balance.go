@@ -7,26 +7,29 @@ import (
 )
 
 type AssetBalance struct {
-	Asset string
-
-	Total decimal.Decimal
-
-	Reserved decimal.Decimal
+	Asset          string
+	Total          decimal.Decimal
+	ExchangeLocked decimal.Decimal
+	Reserved       decimal.Decimal
 }
 
 func NewAssetBalance(
 	asset string,
-	amount decimal.Decimal,
+	total decimal.Decimal,
+	exchangeLocked decimal.Decimal,
 ) AssetBalance {
 	return AssetBalance{
-		Asset:    asset,
-		Total:    amount,
-		Reserved: decimal.Zero,
+		Asset:          asset,
+		Total:          total,
+		ExchangeLocked: exchangeLocked,
+		Reserved:       decimal.Zero,
 	}
 }
 
 func (b AssetBalance) Available() decimal.Decimal {
-	return b.Total.Sub(b.Reserved)
+	return b.Total.
+		Sub(b.ExchangeLocked).
+		Sub(b.Reserved)
 }
 
 func (b *AssetBalance) Reserve(
@@ -53,7 +56,6 @@ func (b *AssetBalance) Reserve(
 	return nil
 }
 
-
 func (b *AssetBalance) Release(
 	amount decimal.Decimal,
 ) error {
@@ -75,13 +77,11 @@ func (b *AssetBalance) Release(
 	return nil
 }
 
-
 func (b *AssetBalance) Add(
 	amount decimal.Decimal,
 ) {
 	b.Total = b.Total.Add(amount)
 }
-
 
 func (b *AssetBalance) Sub(
 	amount decimal.Decimal,

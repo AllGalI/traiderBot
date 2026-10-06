@@ -56,10 +56,7 @@ func (h *CommandHandler) Run(ctx context.Context) error {
 			return nil
 
 		default:
-			fmt.Fprintln(
-				h.writer,
-				"Unknown command.",
-			)
+			fmt.Fprintln(h.writer, "Unknown command.")
 		}
 	}
 }
@@ -107,18 +104,12 @@ func (h *CommandHandler) providersMenu(
 
 		index, err := strconv.Atoi(input)
 		if err != nil {
-			fmt.Fprintln(
-				h.writer,
-				"Enter a number.",
-			)
+			fmt.Fprintln(h.writer, "Enter a number.")
 			continue
 		}
 
 		if index < 1 || index > len(providers) {
-			fmt.Fprintln(
-				h.writer,
-				"Invalid provider.",
-			)
+			fmt.Fprintln(h.writer, "Invalid provider.")
 			continue
 		}
 
@@ -160,14 +151,24 @@ func (h *CommandHandler) providerMenu(
 		case "2":
 			h.handler.PrintMetrics(providerName)
 
+		case "3":
+			if err := h.handler.BrowseProvider(
+				ctx,
+				providerName,
+				h.reader,
+			); err != nil {
+				fmt.Fprintf(
+					h.writer,
+					"error: %v\n",
+					err,
+				)
+			}
+
 		case "0":
 			return nil
 
 		default:
-			fmt.Fprintln(
-				h.writer,
-				"Unknown command.",
-			)
+			fmt.Fprintln(h.writer, "Unknown command.")
 		}
 
 		fmt.Fprintln(h.writer)

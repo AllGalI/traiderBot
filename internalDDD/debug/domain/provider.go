@@ -1,16 +1,22 @@
 package domain
 
-type DomainProvider interface {
+import (
+	"context"
+	"io"
+)
+
+type Provider interface {
 	Name() string
+	Snapshot() (any, error)
+	Metrics() (any, error)
 }
 
-type MetricsProvider interface {
-	DomainProvider
-	Metrics() any
-}
+type BrowserProvider interface {
+	Provider
 
-
-type SnapshotProvider interface {
-	DomainProvider
-	Snapshot() string
+	Browse(
+		ctx context.Context,
+		reader io.Reader,
+		writer io.Writer,
+	) error
 }

@@ -23,13 +23,10 @@ func NewPlanner(
 
 func (p Planner) CreatePlan(
 	input recoveryDomain.RecoveryInput,
+	targetAsset string,
 	ctx MarketContext,
 ) []recoveryDomain.RecoveryPlan {
-	targetAsset, ok := findTargetAsset(
-		input.InitialState,
-	)
-
-	if !ok {
+	if targetAsset == "" {
 		return nil
 	}
 
@@ -43,8 +40,7 @@ func (p Planner) CreatePlan(
 			continue
 		}
 
-		// Стартовый asset уже является целевым.
-		// Восстанавливать его не нужно.
+		// Актив уже является целевым.
 		if asset == targetAsset {
 			continue
 		}
@@ -101,7 +97,6 @@ func (p Planner) findBest(
 			ctx,
 		)
 
-		// Пустой/невалидный результат.
 		if result.OutputAmount.LessThanOrEqual(
 			decimal.Zero,
 		) {
@@ -117,16 +112,4 @@ func (p Planner) findBest(
 	}
 
 	return best, found
-}
-
-func findTargetAsset(
-	initialState recoveryDomain.State,
-) (string, bool) {
-	for asset, amount := range initialState {
-		if amount.GreaterThan(decimal.Zero) {
-			return asset, true
-		}
-	}
-
-	return "", false
 }

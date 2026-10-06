@@ -3,9 +3,10 @@ package domain
 import "github.com/shopspring/decimal"
 
 type Symbol struct {
-	Name        string
-	BaseAsset   string
-	QuoteAsset  string
+	Name       string
+	BaseAsset  string
+	QuoteAsset string
+
 	Constraints SymbolConstraints
 }
 
