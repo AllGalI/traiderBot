@@ -64,11 +64,6 @@ func (s *BalanceService) Refresh(
 	)
 
 	if point.Delta.IsZero() {
-		log.Printf(
-			"[BALANCE] USDT=%s",
-			point.USDT.String(),
-		)
-
 		return nil
 	}
 

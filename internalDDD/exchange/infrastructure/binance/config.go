@@ -18,19 +18,34 @@ type Config struct {
 	WSBaseURL   string
 }
 
-func LoadConfig(useTestnet bool) (Config, error) {
+type RunType int
+
+const (
+	Read = iota
+	Execute
+	Testnet
+
+)
+
+func LoadConfig(runType RunType) (Config, error) {
 	_ = godotenv.Load()
 
 	config := Config{}
 
-	if useTestnet {
-		config.APIKey = os.Getenv("TESTNET_API_KEY")
-		config.APISecret = os.Getenv("TESTNET_SECRET_KEY")
-		config.RESTBaseURL = "https://testnet.binance.vision"
-		config.WSBaseURL = "wss://stream.testnet.binance.vision:9443"
-	} else {
+	switch runType{
+	case Read:
+		config.APIKey = os.Getenv("READ_API_KEY")
+		config.APISecret = os.Getenv("READ_SECRET_KEY")
+		config.RESTBaseURL = "https://api.binance.com"
+		config.WSBaseURL = "wss://stream.binance.com:9443"
+	case Execute:
 		config.APIKey = os.Getenv("API_KEY")
 		config.APISecret = os.Getenv("SECRET_KEY")
+		config.RESTBaseURL = "https://api.binance.com"
+		config.WSBaseURL = "wss://stream.binance.com:9443"
+	case Testnet:
+		config.APIKey = os.Getenv("TESTNET_API_KEY")
+		config.APISecret = os.Getenv("TESTNET_SECRET_KEY")
 		config.RESTBaseURL = "https://api.binance.com"
 		config.WSBaseURL = "wss://stream.binance.com:9443"
 	}

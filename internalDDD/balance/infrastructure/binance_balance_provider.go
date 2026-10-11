@@ -99,12 +99,14 @@ func (p *BinanceBalanceProvider) GetBalances(
 		}
 
 		total := free.Add(locked)
+		if total.GreaterThan(decimal.Zero) {
+			state.Set(
+				balance.Asset,
+				total,
+				locked,
+			)
+		}
 
-		state.Set(
-			balance.Asset,
-			total,
-			locked,
-		)
 	}
 
 	return state, nil

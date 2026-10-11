@@ -4,25 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/url"
-	"time"
 
+	binanceRest "traiderBot/internalDDD/exchange/infrastructure/binance/rest"
 	"traiderBot/internalDDD/market/domain"
 )
 
-
 type OrderBookProvider struct {
-	client  *http.Client
-	baseURL string
+	client *binanceRest.Client
 }
 
-func NewOrderBookProvider() *OrderBookProvider {
+func NewOrderBookProvider(
+	client *binanceRest.Client,
+) *OrderBookProvider {
 	return &OrderBookProvider{
-		client: &http.Client{
-			Timeout: 10 * time.Second,
-		},
-		baseURL: restBaseURL,
+		client: client,
 	}
 }
 
@@ -38,45 +33,26 @@ func (p *OrderBookProvider) Get(
 		)
 	}
 
-	reqURL := fmt.Sprintf(
-		"%s/api/v3/depth?symbol=%s&limit=%d",
-		p.baseURL,
-		url.QueryEscape(symbol),
-		depth,
-	)
-
-	req, err := http.NewRequestWithContext(
+	body, err := p.client.Request(
 		ctx,
-		http.MethodGet,
-		reqURL,
-		nil,
+		"GET",
+		orderBookPath,
+		map[string][]string{
+			"symbol": {symbol},
+			"limit":  {fmt.Sprintf("%d", depth)},
+		},
 	)
-	if err != nil {
-		return domain.OrderBook{}, fmt.Errorf(
-			"create request: %w",
-			err,
-		)
-	}
 
-	resp, err := p.client.Do(req)
 	if err != nil {
 		return domain.OrderBook{}, fmt.Errorf(
 			"request order book: %w",
 			err,
 		)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return domain.OrderBook{}, fmt.Errorf(
-			"binance returned status %d",
-			resp.StatusCode,
-		)
-	}
 
 	var dto orderBookDTO
 
-	if err := json.NewDecoder(resp.Body).Decode(&dto); err != nil {
+	if err := json.Unmarshal(body, &dto); err != nil {
 		return domain.OrderBook{}, fmt.Errorf(
 			"decode order book response: %w",
 			err,
